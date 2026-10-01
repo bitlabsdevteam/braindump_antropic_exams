@@ -1,0 +1,12 @@
+node_modules/
+.next/
+data/*.db
+data/*.db-*
+.DS_Store
+*.log
+.env*
+!.env.example
+credential.md
+AGENTS.md
+AGENTS.MD
+prd.md
