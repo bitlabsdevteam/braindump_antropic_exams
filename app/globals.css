@@ -54,16 +54,6 @@ h1, h2, h3, p { margin: 0; }
 .cert-card:hover .arrow { color: var(--white); background: var(--orange); border-color: var(--orange); }
 .disclaimer { display: flex; gap: 12px; margin-top: 20px; padding: 18px 20px; border-left: 3px solid var(--orange); background: var(--paper-deep); color: var(--muted); font-size: 12px; line-height: 1.55; }
 .disclaimer strong { color: var(--ink); }
-.support-section { display: grid; grid-template-columns: .85fr 1.15fr; gap: 30px; align-items: center; margin-top: 42px; padding: 30px; border: 1px solid var(--line); background: var(--ink); color: var(--white); }
-.support-section h2 { margin: 10px 0 12px; font: 500 clamp(2rem, 4vw, 3.3rem)/.98 Fraunces, serif; letter-spacing: -.04em; }
-.support-section h2 em { color: #ed875e; font-style: normal; }
-.support-section > p:not(.eyebrow) { max-width: 410px; color: #c8c1b6; font-size: 14px; line-height: 1.55; }
-.support-section .eyebrow { color: #ed875e; }
-.support-address { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; margin-top: 20px; padding: 12px; border: 1px solid #4d4b45; background: #2b2b27; }
-.support-address span { color: #c8c1b6; font: 10px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .08em; }
-.support-address code { min-width: 0; overflow-wrap: anywhere; color: #fff8e9; font: 11px/1.45 "DM Mono", monospace; }
-.support-address .button { min-height: 38px; padding-inline: 12px; color: var(--ink); background: #fff8e9; border-color: #fff8e9; }
-.support-address .button:hover { color: var(--white); background: transparent; }
 .footer { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 40px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; color: var(--muted); font: 11px "DM Mono", monospace; }
 
 .practice-shell { min-height: 100vh; }
@@ -211,9 +201,6 @@ h1, h2, h3, p { margin: 0; }
   .section-heading, .practice-heading { align-items: flex-start; flex-direction: column; }
   .section-heading p, .practice-stat { text-align: left; }
   .cert-card { min-height: 310px; padding: 22px; }
-  .support-section { grid-template-columns: 1fr; padding: 22px; }
-  .support-address { grid-template-columns: 1fr; }
-  .support-address .button { width: 100%; }
   .question-card { padding: 20px; }
   .score-strip { grid-template-columns: 1fr; }
   .timer-choices { grid-template-columns: 1fr; }

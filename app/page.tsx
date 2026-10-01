@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { getCertifications } from "../lib/db";
-import SupportCard from "../components/SupportCard";
 
 export default function HomePage() {
   const certifications = getCertifications();
@@ -15,7 +14,6 @@ export default function HomePage() {
       </section>
       <section className="content" aria-labelledby="choose-exam"><div className="section-heading"><h2 id="choose-exam">Find your exam track</h2><p>Start with the certification you’re preparing for. Study untimed, or switch on the 120-minute exam simulation when you’re ready.</p></div>
         <div className="cert-grid">{certifications.map((cert, index) => <Link className="cert-card" href={`/exams/${cert.slug}/practice`} key={cert.slug}><div className="card-top"><span className="card-number">0{index + 1}</span><span className="card-type">Practice set</span></div><h3>{cert.title}</h3><p className="card-description">{cert.description}</p><div className="card-footer"><span className="card-meta">{cert.questionCount} questions · {cert.questionCount} marks · {cert.domainCount} domains</span><span className="arrow" aria-hidden="true">↗</span></div></Link>)}</div>
-        <SupportCard />
         <div className="disclaimer"><strong>Note</strong><span>These are independent practice questions. They are not official live-exam content and do not guarantee a pass. Use them alongside hands-on experience and the official documentation.</span></div>
       </section>
       <footer className="footer"><span>Practice clearly. Learn deeply.</span><span>Independent study companion · authentication coming later</span></footer>
