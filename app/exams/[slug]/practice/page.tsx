@@ -9,5 +9,56 @@ export default async function PracticePage({ params }: { params: Promise<{ slug:
   if (!certification) notFound();
   const questions = getQuestions(slug);
   const domains = getDomains(slug);
-  return <main className="practice-shell"><header className="practice-top"><Link className="back-link" href="/">← All certification sets</Link><span className="practice-title"><span className="mark">B</span>BrainDump.com · {certification.shortTitle}</span></header><div className="practice-main"><aside className="rail" aria-label="Exam domains"><div className="rail-label">Exam index</div><div className="rail-list">{domains.map((domain) => <a className="rail-link" href={`#domain-${domain.number}`} key={domain.number}><span className="rail-number">{String(domain.number).padStart(2, "0")}</span><span>{domain.name}</span></a>)}</div></aside><section><div className="practice-heading"><div><p className="eyebrow">{certification.shortTitle} / practice set</p><h1>{certification.title}</h1></div><div className="practice-stat"><strong>{questions.length}</strong>total marks<br />{questions.length} questions · 1 mark each</div></div><PracticeClient questions={questions} timeLimitMinutes={certification.timeLimitMinutes} /></section></div></main>;
+  return (
+    <main className="practice-shell">
+      <header className="practice-top">
+        <Link className="back-link" href="/">
+          ← All certification sets
+        </Link>
+        <span className="practice-title">
+          <span className="mark">B</span>BrainDump.com · {certification.shortTitle}
+        </span>
+      </header>
+      <div className="practice-main">
+        <aside className="rail" aria-label="Exam domains">
+          <div className="rail-label">Exam index</div>
+          <div className="rail-list">
+            {domains.map((domain) => (
+              <a
+                className="rail-link"
+                href={`/exams/${slug}/practice?question=${encodeURIComponent(questions.find((q) => q.domainNumber === domain.number)?.sourceKey ?? "")}`}
+                key={domain.number}
+              >
+                <span className="rail-number">{String(domain.number).padStart(2, "0")}</span>
+                <span>{domain.name}</span>
+              </a>
+            ))}
+          </div>
+        </aside>
+        <section>
+          <div className="practice-heading">
+            <div>
+              <p className="eyebrow">{certification.shortTitle} / practice set</p>
+              <h1>{certification.title}</h1>
+            </div>
+            <div className="practice-stat">
+              <strong>{questions.filter((question) => !question.reviewRequired).length}</strong>
+              scorable questions
+              <br />
+              {questions.length} questions · 1 mark each
+            </div>
+          </div>
+          <details className="source-disclaimer">
+            <summary>Source disclaimer · {certification.sourceVersion}</summary>
+            <p>{certification.disclaimer}</p>
+          </details>
+          <PracticeClient
+            certification={slug}
+            questions={questions}
+            timeLimitMinutes={certification.timeLimitMinutes}
+          />
+        </section>
+      </div>
+    </main>
+  );
 }

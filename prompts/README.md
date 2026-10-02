@@ -24,7 +24,13 @@ Conversation: {bounded user/assistant messages}
 The learner-facing application response contains:
 
 ```json
-{"message":"string","concept":"string","nextStep":"string","runId":"string","relatedQuestions":[]}
+{
+  "message": "string",
+  "concept": "string",
+  "nextStep": "string",
+  "runId": "string",
+  "relatedQuestions": []
+}
 ```
 
 The internal model action also contains a `type` field for a tool call or final response. Its strict schema is defined by `lib/foundry.ts`; the agent transforms final actions into the learner-facing response above. No markdown or HTML should be returned.
@@ -45,3 +51,5 @@ Use `personal-ai-tutor.evals.md` with a configured model deployment. For each ca
 2. The behavior meets the case's expected outcome and does not trigger its failure conditions.
 
 The examples use synthetic content only. Do not add source question text, answer keys, or rationales to this package. Model behavior must be verified in the integrated server flow, especially for hidden-answer cases.
+
+The route additionally returns updated draft state. Tutor requests specify intent (`hint`, `concept`, `review`, `follow_up`), current revision, question ID, request ID, and message. Selections, reasoning, hint stage, and reveal permissions come from SQLite rather than client claims. Foundry tool arguments are strictly declared nullable `limit` and `domainNumber` fields; the SDK normalizes unused values before execution.

@@ -14,11 +14,15 @@ export type Question = {
   domainName: string | null;
   scenarioNumber: number | null;
   scenarioTitle: string | null;
+  scenarioDescription: string | null;
   options: Option[];
   matchItems: MatchItem[];
+  sourcePage: number | null;
+  reviewRequired: boolean;
+  reviewNote: string | null;
 };
 
-export type Answer = { correctKeys: string[]; rationale: string };
+export type Answer = { correctKeys: string[]; rationale: string; reviewNote?: string | null };
 
 export type Certification = {
   id: number;
@@ -30,4 +34,6 @@ export type Certification = {
   domainCount: number;
   timeLimitMinutes: number | null;
   sourceFile: string;
+  disclaimer: string;
+  sourceVersion: string | null;
 };

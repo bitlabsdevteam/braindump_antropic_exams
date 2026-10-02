@@ -1,0 +1,11 @@
+node_modules
+.next
+data
+pdf
+output
+test-results
+playwright-report
+.env*
+credential.md
+*.tsbuildinfo
+package-lock.json

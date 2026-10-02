@@ -1,185 +1,945 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Answer, Question } from "../lib/types";
+import type {
+  DraftState,
+  PracticeSnapshot,
+  Recommendation,
+  TutorIntent,
+} from "../lib/practice-types";
 
-type TutorResponse = { message: string; concept: string; nextStep: string; runId: string; relatedQuestions: { id: number; sourceKey: string; prompt: string }[] };
-
-function ResultMark({ correct, wrong }: { correct: boolean; wrong: boolean }) {
-  if (correct) return <span className="result-mark result-correct" aria-label="Correct answer">✓</span>;
-  if (wrong) return <span className="result-mark result-wrong" aria-label="Incorrect answer">×</span>;
-  return null;
+const emptyState = (): DraftState => ({
+  selectedKeys: [],
+  reasoning: "",
+  generation: 0,
+  revision: 0,
+  hintCount: 0,
+  submitted: false,
+  exposed: false,
+  visible: false,
+  result: null,
+});
+async function api<T>(
+  url: string,
+  body?: unknown,
+  method = body ? "POST" : "GET",
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(url, {
+    method,
+    cache: "no-store",
+    signal,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "The request could not be completed.");
+  return data as T;
 }
+type TutorReply = {
+  message: string;
+  concept: string;
+  nextStep: string;
+  runId: string;
+  state: DraftState;
+};
+type CoachProps = {
+  question: Question;
+  initial: DraftState;
+  certification: string;
+  onRefresh: () => Promise<void>;
+  onNavigate: (key: string) => void;
+  onBusy: (busy: boolean) => void;
+};
 
-function sameAnswers(selected: string[], correct: string[]) {
-  return selected.length === correct.length && selected.every((key) => correct.includes(key));
-}
-
-function ExamResults({ questions, results, onBack }: { questions: Question[]; results: Record<number, boolean>; onBack: () => void }) {
-  const categories = Array.from(questions.reduce((groups, question) => {
-    const key = question.domainName ?? "General";
-    const group = groups.get(key) ?? { name: key, total: 0, earned: 0 };
-    group.total += 1;
-    if (results[question.id]) group.earned += 1;
-    groups.set(key, group);
-    return groups;
-  }, new Map<string, { name: string; total: number; earned: number }>()).values());
-  const totalMarks = questions.length;
-  const earnedMarks = categories.reduce((sum, category) => sum + category.earned, 0);
-  const overall = Math.round((earnedMarks / totalMarks) * 100);
-  const earnedTotal = Math.max(earnedMarks, 1);
-  let cursor = 0;
-  const gradient = categories.map((category, index) => {
-    const start = cursor;
-    cursor += (category.earned / earnedTotal) * 100;
-    return `${["#d95d32", "#596852", "#5579a5", "#a66b4d", "#8b709b", "#8a7448", "#3d8582", "#b04d55"][index % 8]} ${start}% ${cursor}%`;
-  }).join(", ");
-  return <section className="results-view" aria-labelledby="results-title"><div className="results-header"><div><p className="eyebrow">Exam complete</p><h2 id="results-title">Your practice result</h2><p>One mark per question. Exact answers only for multiple-response and matching questions.</p></div><button className="button secondary" type="button" onClick={onBack}>← Review questions</button></div><div className="results-overview"><div className="result-donut" style={{ background: earnedMarks ? `conic-gradient(${gradient})` : "var(--line)" }} aria-label={`${overall}% overall score`}><div><strong>{overall}%</strong><span>overall</span></div></div><div className="results-total"><span className="score-label">Total score</span><strong>{earnedMarks} / {totalMarks}</strong><span className="score-subtext">marks earned across {questions.length} questions</span></div></div><div className="category-results"><h3>Score by category</h3>{categories.map((category, index) => { const percentage = Math.round((category.earned / category.total) * 100); return <div className="category-row" key={category.name}><span className="category-swatch" style={{ background: ["#d95d32", "#596852", "#5579a5", "#a66b4d", "#8b709b", "#8a7448", "#3d8582", "#b04d55"][index % 8] }} /><span className="category-name">{category.name}</span><span className="category-score">{category.earned} / {category.total}</span><strong>{percentage}%</strong></div>; })}</div></section>;
-}
-
-function QuestionCard({ question, index, onResult }: { question: Question; index: number; onResult: (questionId: number, correct: boolean) => void }) {
-  const [selected, setSelected] = useState<string[]>([]);
+function QuestionCoach({
+  question,
+  initial,
+  certification,
+  onRefresh,
+  onNavigate,
+  onBusy,
+}: CoachProps) {
+  const [state, setState] = useState(initial);
+  const stateRef = useRef(initial);
+  const initialRef = useRef(initial);
+  const [selected, setSelected] = useState(initial.selectedKeys);
+  const [reasoning, setReasoning] = useState(initial.reasoning);
   const [answer, setAnswer] = useState<Answer | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [tutorOpen, setTutorOpen] = useState(false);
-  const [tutorLoading, setTutorLoading] = useState(false);
-  const [tutorError, setTutorError] = useState<string | null>(null);
-  const [tutorInput, setTutorInput] = useState("");
-  const [tutorResponse, setTutorResponse] = useState<TutorResponse | null>(null);
-  const tutorPanelRef = useRef<HTMLDivElement>(null);
-  const tutorRequestRef = useRef<AbortController | null>(null);
-  const isMulti = question.type === "multiple_response";
-  const correctKeys = answer?.correctKeys ?? [];
-
-  async function reveal() {
-    if (answer) {
-      tutorRequestRef.current?.abort();
-      await fetch(`/api/questions/${question.id}/answer`, { method: "DELETE", cache: "no-store" });
-      setAnswer(null); setTutorResponse(null); return;
-    }
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/questions/${question.id}/answer`, { method: "POST", cache: "no-store" });
-      if (response.ok) {
-        const nextAnswer = await response.json() as Answer;
-        setAnswer(nextAnswer);
-        onResult(question.id, sameAnswers(selected, nextAnswer.correctKeys));
-      } else setAnswer(null);
-    } finally { setLoading(false); }
-  }
-
-  function update(key: string) {
-    setSelected((current) => {
-      const next = isMulti
-        ? (current.includes(key) ? current.filter((item) => item !== key) : current.length < question.selectionCount ? [...current, key] : current)
-        : [key];
-      if (answer) onResult(question.id, sameAnswers(next, correctKeys));
-      return next;
-    });
-  }
-
-  function selectedMatch(itemKey: string) {
-    return selected.find((key) => key.startsWith(`${itemKey}:`))?.split(":")[1] ?? "";
-  }
-
-  function updateMatch(itemKey: string, optionKey: string) {
-    setSelected((current) => {
-      const next = [...current.filter((key) => !key.startsWith(`${itemKey}:`)), ...(optionKey ? [`${itemKey}:${optionKey}`] : [])];
-      if (answer) onResult(question.id, sameAnswers(next, correctKeys));
-      return next;
-    });
-  }
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(initial.visible);
+  const [saving, setSaving] = useState(false);
+  const [tutorBusy, setTutorBusy] = useState(false);
+  const [tutorError, setTutorError] = useState("");
+  const [reply, setReply] = useState<TutorReply | null>(null);
+  const [input, setInput] = useState("");
+  const [related, setRelated] = useState<Recommendation[]>([]);
+  const controller = useRef<AbortController | null>(null);
+  const alive = useRef(true);
+  const epoch = useRef(0);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const pendingSaves = useRef(0);
+  const failedSave = useRef(false);
+  const submission = useRef<string | null>(null);
+  const tutorPanel = useRef<HTMLDivElement>(null);
+  const setServerState = useCallback((next: DraftState) => {
+    stateRef.current = next;
+    setState(next);
+  }, []);
+  const cancelTutor = useCallback(() => {
+    epoch.current += 1;
+    controller.current?.abort();
+    setTutorBusy(false);
+    setReply(null);
+    setTutorError("");
+  }, []);
 
   useEffect(() => {
-    if (tutorResponse) tutorPanelRef.current?.focus();
-  }, [tutorResponse]);
+    onBusy(busy || saving);
+  }, [busy, saving, onBusy]);
+  useEffect(() => {
+    alive.current = true;
+    // Re-entry starts hidden, even if this question was revealed on an earlier visit.
+    async function restore() {
+      try {
+        if (initialRef.current.visible) {
+          const data = await api<{ state: DraftState }>(
+            `/api/questions/${question.id}/answer`,
+            undefined,
+            "DELETE",
+          );
+          if (alive.current) setServerState(data.state);
+        }
+        const data = await api<{ recommendations: Recommendation[] }>(
+          `/api/practice?certification=${encodeURIComponent(certification)}&questionId=${question.id}`,
+        );
+        if (alive.current) setRelated(data.recommendations);
+      } catch (cause) {
+        if (alive.current) setError((cause as Error).message);
+      } finally {
+        if (alive.current) setBusy(false);
+      }
+    }
+    void restore();
+    return () => {
+      alive.current = false;
+      epoch.current += 1;
+      controller.current?.abort();
+    };
+  }, [question.id, certification, setServerState]);
+  useEffect(() => {
+    if (reply) tutorPanel.current?.focus();
+  }, [reply]);
 
-  async function askTutor(content = "Please assess my current answer and help me reason through this question.") {
-    const message = content.trim();
-    if (!message || tutorLoading) return;
-    setTutorOpen(true);
-    setTutorLoading(true);
-    setTutorError(null);
-    setTutorInput("");
-    tutorRequestRef.current?.abort();
-    const controller = new AbortController();
-    tutorRequestRef.current = controller;
-    try {
-      const response = await fetch("/api/tutor", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ questionId: question.id, selectedKeys: selected, message, requestId: crypto.randomUUID() }), signal: controller.signal,
+  function save(nextSelected: string[], nextReasoning: string) {
+    cancelTutor();
+    setError("");
+    pendingSaves.current += 1;
+    setSaving(true);
+    queue.current = queue.current
+      .catch(() => {})
+      .then(async () => {
+        if (failedSave.current) throw new Error("Reload progress to resolve the unsaved change.");
+        const data = await api<{ state: DraftState }>("/api/practice", {
+          action: "draft",
+          certification,
+          questionId: question.id,
+          selectedKeys: nextSelected,
+          reasoning: nextReasoning,
+          revision: stateRef.current.revision,
+        });
+        if (alive.current) setServerState(data.state);
+      })
+      .catch((cause) => {
+        failedSave.current = true;
+        if (alive.current) setError((cause as Error).message);
+      })
+      .finally(() => {
+        pendingSaves.current -= 1;
+        if (alive.current) setSaving(pendingSaves.current > 0);
       });
-      const body = await response.json() as Partial<TutorResponse> & { error?: string };
-      if (!response.ok) throw new Error(body.error || "The tutor could not respond.");
-      if (typeof body.message !== "string" || typeof body.concept !== "string" || typeof body.nextStep !== "string" || typeof body.runId !== "string" || !Array.isArray(body.relatedQuestions)) throw new Error("The tutor returned an invalid response.");
-      setTutorResponse(body as TutorResponse);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      setTutorError(error instanceof Error ? error.message : "The tutor could not respond.");
-    } finally { if (tutorRequestRef.current === controller) { tutorRequestRef.current = null; setTutorLoading(false); } }
   }
-
-  async function resetTutor() {
-    tutorRequestRef.current?.abort();
-    await fetch("/api/tutor", { method: "DELETE", cache: "no-store" });
-    setTutorResponse(null); setTutorError(null); setTutorInput("");
+  function choose(key: string) {
+    const next =
+      question.type === "multiple_response"
+        ? selected.includes(key)
+          ? selected.filter((item) => item !== key)
+          : [...selected, key]
+        : [key];
+    setSelected(next);
+    save(next, reasoning);
   }
-
-  return <article className="question-card" id={question.domainNumber ? `domain-${question.domainNumber}` : undefined}>
-    <div className="question-head"><span className="question-id">{String(index + 1).padStart(2, "0")} / {question.sourceKey}</span><span className="question-type">{question.type.replace(/_/g, " ")} · select {question.selectionCount}</span></div>
-    <p className="question-prompt">{question.prompt}</p>
-    {question.type === "scenario_matching" ? <div className="option-list">{question.matchItems.map((item) => {
-      const chosen = selectedMatch(item.key);
-      const correct = correctKeys.find((key) => key.startsWith(`${item.key}:`))?.split(":")[1];
-      return <div className="match-item" key={item.key}><p>{item.text}</p><div className={`match-control ${answer && chosen === correct ? "match-correct" : answer && chosen && chosen !== correct ? "match-wrong" : ""}`}><select className="match-select" aria-label={`Answer for matching item ${item.ordinal}`} value={chosen} onChange={(event) => updateMatch(item.key, event.target.value)}><option value="">Choose a pattern…</option>{question.options.map((option) => <option value={option.key} key={option.key}>{option.text}</option>)}</select><ResultMark correct={Boolean(answer && chosen && chosen === correct)} wrong={Boolean(answer && chosen && chosen !== correct)} /></div>{answer && correct && chosen !== correct && <p className="correct-hint">Correct: {question.options.find((option) => option.key === correct)?.text}</p>}</div>;
-    })}</div> : <div className="option-list">{question.options.map((option) => {
-      const correct = correctKeys.includes(option.key);
-      const wrong = Boolean(answer && selected.includes(option.key) && !correct);
-      return <label className={`question-option ${answer && correct ? "option-correct" : ""} ${wrong ? "option-wrong" : ""}`} key={option.key}><input type={isMulti ? "checkbox" : "radio"} name={`q-${question.id}`} checked={selected.includes(option.key)} onChange={() => update(option.key)} /><span className="option-marker">{option.key}</span><span className="option-text">{option.text}</span><ResultMark correct={Boolean(answer && correct)} wrong={wrong} /></label>;
-    })}</div>}
-    <div className="question-actions"><span className="question-help">{question.domainName ?? question.scenarioTitle ?? "Practice question"}</span><div className="question-buttons"><button className="tutor-button" type="button" onClick={() => { setTutorOpen(true); if (!tutorResponse && !tutorLoading) void askTutor(); }}>{tutorOpen ? "Tutor open" : "Ask AI Tutor"}</button><button className="toggle" type="button" onClick={reveal}>{loading ? "Checking…" : answer ? "Hide answer" : "Reveal answer"}</button></div></div>
-    {answer && <div className="answer-panel" role="status"><h3>Answer key · 1 mark</h3><div className="answer-list">{answer.correctKeys.map((key) => <span className="answer-chip" key={key}>{key}</span>)}</div><p>{answer.rationale}</p></div>}
-    {tutorOpen && <div className="tutor-panel" ref={tutorPanelRef} tabIndex={-1} aria-labelledby={`tutor-title-${question.id}`}>
-      <div className="tutor-panel-head"><div><p className="eyebrow">AI study coach</p><h3 id={`tutor-title-${question.id}`}>AI Tutor explanation</h3></div><div><button className="tutor-close" type="button" onClick={() => void resetTutor()}>Reset</button><button className="tutor-close" type="button" onClick={() => setTutorOpen(false)}>Close</button></div></div>
-      {!answer && <p className="tutor-note">Before the official answer is revealed, the tutor gives concept-level guidance without naming the answer.</p>}
-      {tutorLoading && <p className="tutor-state" role="status" aria-live="polite">Thinking through this question…</p>}
-      {tutorError && <div className="tutor-error" role="alert"><p>{tutorError}</p><button className="tutor-retry" type="button" onClick={() => void askTutor(tutorInput || "Please assess my current answer and help me reason through this question.")}>Try again</button></div>}
-      {tutorResponse && <div className="tutor-response" role="status" aria-live="polite"><p className="tutor-message">{tutorResponse.message}</p><div className="tutor-detail"><strong>Concept</strong><p>{tutorResponse.concept}</p></div><div className="tutor-detail"><strong>Next step</strong><p>{tutorResponse.nextStep}</p></div>{tutorResponse.relatedQuestions.length > 0 && <div className="tutor-detail"><strong>Related practice</strong><ul>{tutorResponse.relatedQuestions.map((item) => <li key={item.id}>{item.sourceKey}: {item.prompt}</li>)}</ul></div>}</div>}
-      <form className="tutor-form" onSubmit={(event) => { event.preventDefault(); void askTutor(tutorInput); }}><label htmlFor={`tutor-input-${question.id}`}>Ask a follow-up</label><div><textarea id={`tutor-input-${question.id}`} value={tutorInput} onChange={(event) => setTutorInput(event.target.value)} maxLength={1000} placeholder="What part should I revisit?" rows={2} /><button className="button" type="submit" disabled={!tutorInput.trim() || tutorLoading}>Send</button></div></form>
-    </div>}
-  </article>;
+  function match(item: string, key: string) {
+    const next = [
+      ...selected.filter((value) => !value.startsWith(`${item}:`)),
+      ...(key ? [`${item}:${key}`] : []),
+    ];
+    setSelected(next);
+    save(next, reasoning);
+  }
+  async function act(action: "submit" | "reveal" | "hide" | "retry") {
+    cancelTutor();
+    setBusy(true);
+    setError("");
+    try {
+      await queue.current;
+      if (failedSave.current)
+        throw new Error("Your latest changes were not saved. Reload progress before continuing.");
+      if (action === "submit" || action === "retry") {
+        if (action === "submit") submission.current ??= crypto.randomUUID();
+        const data = await api<{
+          state: DraftState;
+          answer?: Answer;
+          recommendations?: Recommendation[];
+        }>("/api/practice", {
+          action,
+          certification,
+          questionId: question.id,
+          requestId: submission.current,
+          revision: stateRef.current.revision,
+        });
+        if (!alive.current) return;
+        setServerState(data.state);
+        setSelected(data.state.selectedKeys);
+        setReasoning(data.state.reasoning);
+        setAnswer(data.answer ?? null);
+        if (data.recommendations) setRelated(data.recommendations);
+        if (action === "retry") submission.current = null;
+      } else if (action === "reveal") {
+        const data = await api<Answer>(`/api/questions/${question.id}/answer`, undefined, "POST");
+        const updated = await api<{ state: DraftState }>(
+          `/api/practice?certification=${encodeURIComponent(certification)}&questionId=${question.id}`,
+        );
+        if (!alive.current) return;
+        setAnswer(data);
+        setServerState(updated.state);
+      } else {
+        const data = await api<{ state: DraftState }>(
+          `/api/questions/${question.id}/answer`,
+          undefined,
+          "DELETE",
+        );
+        if (!alive.current) return;
+        setAnswer(null);
+        setServerState(data.state);
+      }
+      await onRefresh();
+    } catch (cause) {
+      if (alive.current) setError((cause as Error).message);
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  }
+  async function ask(intent: TutorIntent, message: string) {
+    if (tutorBusy) return;
+    setTutorBusy(true);
+    setTutorError("");
+    const version = ++epoch.current;
+    controller.current?.abort();
+    controller.current = new AbortController();
+    try {
+      await queue.current;
+      if (failedSave.current) throw new Error("Reload progress before asking the tutor.");
+      const data = await api<TutorReply>(
+        "/api/tutor",
+        {
+          questionId: question.id,
+          requestId: crypto.randomUUID(),
+          intent,
+          message,
+          revision: stateRef.current.revision,
+        },
+        "POST",
+        controller.current.signal,
+      );
+      if (!alive.current || version !== epoch.current) return;
+      setReply(data);
+      setServerState(data.state);
+      setInput("");
+    } catch (cause) {
+      if (alive.current && version === epoch.current && (cause as Error).name !== "AbortError")
+        setTutorError((cause as Error).message);
+    } finally {
+      if (alive.current && version === epoch.current) setTutorBusy(false);
+    }
+  }
+  const required =
+    question.type === "scenario_matching" ? question.matchItems.length : question.selectionCount;
+  const complete = selected.length === required;
+  const locked =
+    busy || state.submitted || Boolean(answer) || state.visible || question.reviewRequired;
+  return (
+    <article
+      className="question-card"
+      aria-labelledby="active-question"
+      id={`question-${question.sourceKey}`}
+    >
+      <div className="question-head">
+        <span className="question-id">{question.sourceKey}</span>
+        <span className="question-type">
+          {question.type.replace(/_/g, " ")} ·{" "}
+          {question.type === "scenario_matching" ? `match ${required} items` : `select ${required}`}
+        </span>
+      </div>
+      <h2 id="active-question" className="question-prompt" tabIndex={-1}>
+        {question.prompt}
+      </h2>
+      <p className="question-help">
+        {[question.domainName, question.scenarioTitle].filter(Boolean).join(" · ")}
+        {question.sourcePage ? ` · PDF page ${question.sourcePage}` : ""}
+      </p>
+      {question.scenarioDescription && (
+        <details className="scenario-context">
+          <summary>Read the scenario</summary>
+          <p>{question.scenarioDescription}</p>
+        </details>
+      )}
+      {question.reviewRequired && (
+        <div className="source-review" role="note">
+          <strong>Source review required — excluded from scoring and coaching</strong>
+          <p>{question.reviewNote}</p>
+        </div>
+      )}
+      <fieldset className="answer-options" disabled={locked} aria-describedby="selection-help">
+        <legend className="sr-only">Your answer</legend>
+        {question.type === "scenario_matching" ? (
+          question.matchItems.map((item) => (
+            <div className="match-item" key={item.key}>
+              <label htmlFor={`match-${item.key}`}>{item.text}</label>
+              <select
+                id={`match-${item.key}`}
+                className="match-select"
+                value={selected.find((key) => key.startsWith(`${item.key}:`))?.split(":")[1] ?? ""}
+                onChange={(event) => match(item.key, event.target.value)}
+              >
+                <option value="">Choose an option…</option>
+                {question.options.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.text}
+                  </option>
+                ))}
+              </select>
+              {answer && (
+                <p className="correct-hint">
+                  Source pairing:{" "}
+                  {answer.correctKeys
+                    .filter((key) => key.startsWith(`${item.key}:`))
+                    .map(
+                      (key) =>
+                        question.options.find((option) => option.key === key.split(":")[1])?.text,
+                    )
+                    .join(", ")}
+                </p>
+              )}
+            </div>
+          ))
+        ) : (
+          <div className="option-list">
+            {question.options.map((option) => {
+              const correct = answer?.correctKeys.includes(option.key);
+              const wrong = answer && selected.includes(option.key) && !correct;
+              return (
+                <label
+                  className={`question-option ${correct ? "option-correct" : ""} ${wrong ? "option-wrong" : ""}`}
+                  key={option.key}
+                >
+                  <input
+                    type={question.type === "single_choice" ? "radio" : "checkbox"}
+                    name={`answer-${question.id}`}
+                    checked={selected.includes(option.key)}
+                    disabled={
+                      question.type === "multiple_response" &&
+                      !selected.includes(option.key) &&
+                      selected.length >= required
+                    }
+                    onChange={() => choose(option.key)}
+                  />
+                  <span className="option-marker">{option.key}</span>
+                  <span className="option-text">{option.text}</span>
+                  {correct && <span className="answer-status">✓ Source answer</span>}
+                  {wrong && <span className="answer-status">× Your selection</span>}
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </fieldset>
+      <p id="selection-help" className="question-help">
+        {state.submitted
+          ? "Attempt recorded. Start a retry to answer again."
+          : `${selected.length} of ${required} selected. ${complete ? "Ready to submit." : "Complete every required selection to submit."}`}
+      </p>
+      <div className="reasoning-input">
+        <label htmlFor="reasoning">
+          Your reasoning <span>(optional)</span>
+        </label>
+        <textarea
+          id="reasoning"
+          maxLength={1000}
+          rows={2}
+          disabled={locked}
+          value={reasoning}
+          onChange={(event) => {
+            setReasoning(event.target.value);
+            save(selected, event.target.value);
+          }}
+          placeholder="What led you to this answer?"
+        />
+        <small role="status">
+          {saving
+            ? "Saving…"
+            : error
+              ? "Changes may not be saved"
+              : "Progress saved in this browser for 30 days"}
+        </small>
+      </div>
+      {state.exposed && !state.submitted && !question.reviewRequired && (
+        <p className="question-help">
+          You have seen this source answer. Future attempts count as review practice.
+        </p>
+      )}
+      {error && (
+        <div className="tutor-error" role="alert">
+          <p>{error}</p>
+          <button className="button secondary" onClick={() => window.location.reload()}>
+            Reload progress
+          </button>
+        </div>
+      )}
+      <div className="question-actions">
+        <div className="question-buttons">
+          {!state.submitted && !state.exposed && (
+            <button
+              className="button"
+              disabled={busy || saving || !complete || Boolean(answer) || question.reviewRequired}
+              onClick={() => void act("submit")}
+            >
+              Submit and reveal
+            </button>
+          )}
+          {!state.submitted && state.exposed && !state.visible && !answer && (
+            <button
+              className="button"
+              disabled={busy || saving || !complete || question.reviewRequired}
+              onClick={() => void act("submit")}
+            >
+              Submit retry and reveal
+            </button>
+          )}
+          <button
+            className="toggle"
+            disabled={busy || saving}
+            onClick={() => void act(answer ? "hide" : "reveal")}
+          >
+            {answer
+              ? "Hide answer"
+              : state.submitted
+                ? "Show source answer"
+                : "Reveal without answering"}
+          </button>
+          {(state.submitted || state.exposed) && !question.reviewRequired && (
+            <button
+              className="button secondary"
+              disabled={busy || saving}
+              onClick={() => void act("retry")}
+            >
+              Try again
+            </button>
+          )}
+        </div>
+      </div>
+      {answer && (
+        <section className="answer-panel" aria-label="Source answer" aria-live="polite">
+          <h3>
+            {question.reviewRequired
+              ? "Disputed source answer — unscored"
+              : state.result
+                ? `${state.result.correct ? "Correct" : "Incorrect"} · ${state.result.kind} attempt`
+                : "Source answer · unscored reveal"}
+          </h3>
+          <div className="answer-list">
+            {answer.correctKeys.map((key) => (
+              <span className="answer-chip" key={key}>
+                {key}
+              </span>
+            ))}
+          </div>
+          <p>{answer.rationale}</p>
+          {answer.reviewNote && <p className="source-review">{answer.reviewNote}</p>}
+        </section>
+      )}
+      {!question.reviewRequired && (
+        <section className="coach-section" aria-label="AI question coach">
+          <h3>Your question coach</h3>
+          <p className="tutor-note">
+            {answer
+              ? "Explore the source rationale and your reasoning. AI commentary may be imperfect."
+              : "Get conceptual guidance while keeping the source answer hidden."}
+          </p>
+          <div className="coach-actions">
+            {!answer && (
+              <button
+                className="tutor-button"
+                disabled={busy || saving || tutorBusy}
+                onClick={() =>
+                  void ask(
+                    "hint",
+                    "Give me the next conceptual hint without identifying an answer.",
+                  )
+                }
+              >
+                {state.hintCount
+                  ? `Next hint · stage ${Math.min(state.hintCount + 1, 3)}/3`
+                  : "Get a hint"}
+              </button>
+            )}
+            <button
+              className="tutor-button"
+              disabled={busy || saving || tutorBusy}
+              onClick={() =>
+                void ask("concept", "Explain the underlying concept using a neutral example.")
+              }
+            >
+              Explain the concept
+            </button>
+            {answer && (
+              <button
+                className="tutor-button"
+                disabled={busy || saving || tutorBusy}
+                onClick={() =>
+                  void ask(
+                    "review",
+                    "Explain the source rationale and help me understand my reasoning and the distractors where supported.",
+                  )
+                }
+              >
+                Review my answer
+              </button>
+            )}
+          </div>
+          {tutorBusy && (
+            <p className="tutor-state" role="status">
+              Thinking through the concept…
+            </p>
+          )}
+          {tutorError && (
+            <p className="tutor-error" role="alert">
+              {tutorError}
+            </p>
+          )}
+          {reply && (
+            <div className="tutor-panel" ref={tutorPanel} tabIndex={-1} aria-label="AI commentary">
+              <p className="eyebrow">AI commentary</p>
+              <p className="tutor-message">{reply.message}</p>
+              <div className="tutor-detail">
+                <strong>Concept</strong>
+                <p>{reply.concept}</p>
+              </div>
+              <div className="tutor-detail">
+                <strong>Next step</strong>
+                <p>{reply.nextStep}</p>
+              </div>
+            </div>
+          )}
+          <form
+            className="tutor-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void ask("follow_up", input.trim());
+            }}
+          >
+            <label htmlFor="follow-up">Ask a follow-up</label>
+            <div>
+              <textarea
+                id="follow-up"
+                value={input}
+                maxLength={1000}
+                rows={2}
+                onChange={(event) => setInput(event.target.value)}
+              />
+              <button className="button" disabled={busy || saving || tutorBusy || !input.trim()}>
+                Send
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
+      <section className="related-practice">
+        <h3>Practice next</h3>
+        {related.length ? (
+          <ul>
+            {related.map((item) => (
+              <li key={item.sourceKey}>
+                <button
+                  className="related-link"
+                  disabled={busy || saving}
+                  onClick={() => onNavigate(item.sourceKey)}
+                >
+                  <strong>{item.sourceKey}</strong> — {item.reason}
+                  <span>{item.prompt}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="question-help">
+            No new questions or unresolved mistakes remain. Use the question navigator to revisit a
+            topic.
+          </p>
+        )}
+      </section>
+    </article>
+  );
 }
 
-export default function PracticeClient({ questions, timeLimitMinutes }: { questions: Question[]; timeLimitMinutes: number | null }) {
-  const [page, setPage] = useState(0);
-  const [results, setResults] = useState<Record<number, boolean>>({});
-  const [showResults, setShowResults] = useState(false);
-  const [started, setStarted] = useState(false);
-  const [timerEnabled, setTimerEnabled] = useState(false);
-  const [remainingSeconds, setRemainingSeconds] = useState((timeLimitMinutes ?? 0) * 60);
-  const [expired, setExpired] = useState(false);
-  const pageSize = 5;
-  const pages = Math.ceil(questions.length / pageSize);
-  const visible = useMemo(() => questions.slice(page * pageSize, (page + 1) * pageSize), [page, questions]);
-  const attempted = Object.keys(results).length;
-  const earned = Object.values(results).filter(Boolean).length;
-  const percentage = attempted ? Math.round((earned / attempted) * 100) : 0;
-  function recordResult(questionId: number, correct: boolean) { setResults((current) => ({ ...current, [questionId]: correct })); }
-  // The timer is deliberately opt-in so learners can study without exam pressure.
+export default function PracticeClient({
+  questions,
+  timeLimitMinutes,
+  certification,
+}: {
+  questions: Question[];
+  timeLimitMinutes: number | null;
+  certification: string;
+}) {
+  const [snapshot, setSnapshot] = useState<PracticeSnapshot | null>(null);
+  const [index, setIndex] = useState(0);
+  const [timed, setTimed] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [childBusy, setChildBusy] = useState(false);
+  const [generation, setGeneration] = useState(0);
+  const [reviewOnly, setReviewOnly] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const onBusy = useCallback((value: boolean) => setChildBusy(value), []);
+  const refresh = useCallback(async () => {
+    const next = await api<PracticeSnapshot>(
+      `/api/practice?certification=${encodeURIComponent(certification)}`,
+    );
+    setSnapshot(next);
+  }, [certification]);
   useEffect(() => {
-    if (!started || !timerEnabled || expired) return undefined;
-    const interval = window.setInterval(() => setRemainingSeconds((current) => {
-      if (current <= 1) { setExpired(true); return 0; }
-      return current - 1;
-    }), 1000);
-    return () => window.clearInterval(interval);
-  }, [expired, started, timerEnabled]);
-  const minutes = Math.floor(remainingSeconds / 60).toString().padStart(2, "0");
-  const seconds = (remainingSeconds % 60).toString().padStart(2, "0");
-  if (!questions.length) return <div className="empty-state">No questions have been imported yet. Run <code>npm run seed</code> to load the source PDFs.</div>;
-  if (!started) return <div className="timer-setup"><p className="eyebrow">Set your pace</p><h2>How would you like to practice?</h2><p>The source paper recommends {timeLimitMinutes ?? 120} minutes. Choose a timed run to mimic the real exam, or study without a countdown.</p><div className="timer-choices"><label className={`timer-choice ${timerEnabled ? "selected" : ""}`}><input type="radio" name="timer-mode" checked={timerEnabled} onChange={() => setTimerEnabled(true)} /><span><strong>Timed exam</strong><small>{timeLimitMinutes ?? 120} minutes · countdown on</small></span></label><label className={`timer-choice ${!timerEnabled ? "selected" : ""}`}><input type="radio" name="timer-mode" checked={!timerEnabled} onChange={() => setTimerEnabled(false)} /><span><strong>Untimed study</strong><small>Reveal and learn at your own pace</small></span></label></div><button className="button" type="button" onClick={() => setStarted(true)}>Start practice →</button></div>;
-  if (showResults) return <ExamResults questions={questions} results={results} onBack={() => setShowResults(false)} />;
-  const canGetResult = attempted === questions.length || expired;
-  return <><div className={`timer-bar ${expired ? "timer-expired" : remainingSeconds <= 300 ? "timer-warning" : ""}`} aria-live="polite"><span>{expired ? "Time expired · review mode" : "Exam timer"}</span>{!expired && <strong>{minutes}:{seconds}</strong>}<small>{timerEnabled ? `${timeLimitMinutes ?? 120} minute limit` : "Untimed study"}</small></div><div className="score-strip" aria-live="polite"><div><span className="score-label">Practice score</span><strong>{earned} / {questions.length}</strong><span className="score-subtext">marks earned</span></div><div><span className="score-label">Attempted</span><strong>{attempted}</strong><span className="score-subtext">of {questions.length} questions</span></div><div><span className="score-label">Accuracy</span><strong>{percentage}%</strong><span className="score-subtext">on revealed answers</span></div></div><div aria-live="polite" className="question-help" style={{ marginBottom: 16 }}>Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, questions.length)} of {questions.length} · 1 mark per question</div>{visible.map((question, index) => <QuestionCard question={question} index={page * pageSize + index} onResult={recordResult} key={question.sourceKey} />)}<nav className="pagination" aria-label="Question pages"><button className="button secondary" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>← Previous</button>{page === pages - 1 ? <button className="button" disabled={!canGetResult} onClick={() => setShowResults(true)}>{canGetResult ? "Get result →" : `Reveal all answers (${attempted}/${questions.length})`}</button> : <><span className="card-meta">Page {page + 1} of {pages}</span><button className="button" onClick={() => setPage((value) => Math.min(pages - 1, value + 1))}>Next page →</button></>}</nav></>;
+    let active = true;
+    api<PracticeSnapshot>(`/api/practice?certification=${encodeURIComponent(certification)}`)
+      .then((data) => {
+        if (!active) return;
+        setSnapshot(data);
+        const requested = new URL(window.location.href).searchParams.get("question");
+        const savedIndex = questions.findIndex(
+          (question) => question.sourceKey === (requested || data.settings.questionKey),
+        );
+        setIndex(Math.max(0, savedIndex));
+      })
+      .catch((cause) => {
+        if (active) setError(cause.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [certification, questions]);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  async function navigate(key: string) {
+    const nextIndex = questions.findIndex((question) => question.sourceKey === key);
+    if (nextIndex < 0 || busy || childBusy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const data = await api<{ snapshot: PracticeSnapshot }>("/api/practice", {
+        action: "navigate",
+        certification,
+        sourceKey: key,
+      });
+      setSnapshot(data.snapshot);
+      setIndex(nextIndex);
+      setGeneration((value) => value + 1);
+      const url = new URL(window.location.href);
+      url.searchParams.set("question", key);
+      window.history.replaceState(null, "", url);
+      setTimeout(() => document.getElementById("active-question")?.focus(), 0);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function start() {
+    setBusy(true);
+    try {
+      const data = await api<{ snapshot: PracticeSnapshot }>("/api/practice", {
+        action: "start",
+        certification,
+        timed,
+      });
+      setSnapshot(data.snapshot);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function reset() {
+    setBusy(true);
+    setGeneration((value) => value + 1);
+    try {
+      await api("/api/practice", undefined, "DELETE");
+      await refresh();
+      setIndex(0);
+      setReviewOnly(false);
+      setConfirmReset(false);
+      setError("");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("question");
+      window.history.replaceState(null, "", url);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (!questions.length)
+    return <div className="empty-state">This certification has no questions available yet.</div>;
+  if (!snapshot)
+    return (
+      <div className="empty-state" role={error ? "alert" : "status"}>
+        {error || "Loading your learning progress…"}
+        {error && (
+          <button className="button" onClick={() => window.location.reload()}>
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  const progress = snapshot.progress;
+  const remaining = snapshot.settings.deadline
+    ? Math.max(0, Math.ceil((snapshot.settings.deadline - now) / 1000))
+    : null;
+  const visibleQuestions = reviewOnly
+    ? questions.filter((question) => snapshot.mistakeKeys.includes(question.sourceKey))
+    : questions;
+  const current = questions[index];
+  return (
+    <>
+      {error && (
+        <p className="tutor-error" role="alert">
+          {error}
+        </p>
+      )}
+      <section className="learning-summary" aria-label="Learning progress">
+        <div className="score-strip">
+          <div>
+            <span className="score-label">Questions attempted</span>
+            <strong>
+              {progress.attempted} /{" "}
+              {questions.filter((question) => !question.reviewRequired).length}
+            </strong>
+            <span className="score-subtext">Unscored reveals excluded</span>
+          </div>
+          <div>
+            <span className="score-label">Independent first attempts</span>
+            <strong>
+              {progress.independent
+                ? `${Math.round((progress.independentCorrect / progress.independent) * 100)}%`
+                : "—"}
+            </strong>
+            <span className="score-subtext">
+              {progress.independent
+                ? `${progress.independentCorrect} correct of ${progress.independent} attempts`
+                : "No independent attempts yet"}
+            </span>
+          </div>
+          <div>
+            <span className="score-label">Supported learning</span>
+            <strong>{progress.assisted} assisted</strong>
+            <span className="score-subtext">
+              {progress.reviewCorrect} correct of {progress.reviews} review attempts
+            </span>
+          </div>
+        </div>
+        <details>
+          <summary>Progress by domain</summary>
+          <ul className="domain-progress">
+            {progress.domains.map((domain) => (
+              <li key={domain.name}>
+                <strong>{domain.name}</strong>
+                <span>
+                  {domain.attempted} attempted ·{" "}
+                  {domain.independent
+                    ? `${domain.correct}/${domain.independent} independent correct`
+                    : "No independent attempts yet"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+        <div className="progress-actions">
+          <button
+            className="button secondary"
+            disabled={
+              busy || childBusy || !snapshot.settings.started || !snapshot.mistakeKeys.length
+            }
+            onClick={() => {
+              setReviewOnly(!reviewOnly);
+              if (!reviewOnly) void navigate(snapshot.mistakeKeys[0]);
+            }}
+          >
+            {reviewOnly ? "All questions" : `Review mistakes (${snapshot.mistakeKeys.length})`}
+          </button>
+          <button
+            className="text-button"
+            disabled={busy || childBusy}
+            onClick={() => setConfirmReset(!confirmReset)}
+          >
+            Reset learning progress
+          </button>
+        </div>
+        {confirmReset && (
+          <div className="reset-confirm" role="group" aria-label="Confirm progress reset">
+            <p>
+              Delete all progress and tutor conversations for every certification in this browser?
+            </p>
+            <button className="button" disabled={busy || childBusy} onClick={() => void reset()}>
+              Delete my progress
+            </button>
+            <button className="button secondary" onClick={() => setConfirmReset(false)}>
+              Keep learning
+            </button>
+          </div>
+        )}
+        <p className="question-help">
+          Anonymous progress expires {new Date(snapshot.expiresAt).toLocaleDateString()}. Clearing
+          cookies loses access. No login required.
+        </p>
+      </section>
+      {!snapshot.settings.started ? (
+        <section className="timer-setup">
+          <p className="eyebrow">Set your pace</p>
+          <h2>Practice with your question coach</h2>
+          <p>Try each question, ask for hints, then reveal the source answer and learn from it.</p>
+          <div className="timer-choices">
+            <label className={`timer-choice ${!timed ? "selected" : ""}`}>
+              <input type="radio" name="timer" checked={!timed} onChange={() => setTimed(false)} />
+              <span>
+                <strong>Untimed study</strong>
+                <small>Learn at your own pace</small>
+              </span>
+            </label>
+            <label className={`timer-choice ${timed ? "selected" : ""}`}>
+              <input type="radio" name="timer" checked={timed} onChange={() => setTimed(true)} />
+              <span>
+                <strong>Timed practice</strong>
+                <small>{timeLimitMinutes ?? 120} minutes · coaching stays available</small>
+              </span>
+            </label>
+          </div>
+          <button className="button" disabled={busy} onClick={() => void start()}>
+            Start practice
+          </button>
+        </section>
+      ) : (
+        <>
+          <div className={`timer-bar ${remaining === 0 ? "timer-expired" : ""}`}>
+            <span>
+              {remaining === null
+                ? "Untimed study"
+                : remaining === 0
+                  ? "Time expired · continue reviewing at your own pace"
+                  : "Practice timer"}
+            </span>
+            {remaining !== null && remaining > 0 && (
+              <strong role="timer" aria-label="Time remaining">
+                {Math.floor(remaining / 60)
+                  .toString()
+                  .padStart(2, "0")}
+                :{(remaining % 60).toString().padStart(2, "0")}
+              </strong>
+            )}
+          </div>
+          <nav className="question-navigation" aria-label="Question navigation">
+            <label htmlFor="question-nav">
+              Question {index + 1} of {questions.length}
+            </label>
+            <select
+              id="question-nav"
+              value={current.sourceKey}
+              disabled={busy || childBusy}
+              onChange={(event) => void navigate(event.target.value)}
+            >
+              {visibleQuestions.map((question) => (
+                <option key={question.sourceKey} value={question.sourceKey}>
+                  {question.ordinal}. {question.sourceKey}
+                  {question.reviewRequired ? " · source review" : ""}
+                </option>
+              ))}
+            </select>
+          </nav>
+          {reviewOnly && !visibleQuestions.length ? (
+            <div className="empty-state">
+              No unresolved mistakes remain. Switch to all questions to continue.
+            </div>
+          ) : (
+            !busy && (
+              <QuestionCoach
+                key={`${current.sourceKey}-${generation}`}
+                question={current}
+                initial={snapshot.states[current.sourceKey] ?? emptyState()}
+                certification={certification}
+                onRefresh={refresh}
+                onNavigate={(key) => {
+                  setReviewOnly(false);
+                  void navigate(key);
+                }}
+                onBusy={onBusy}
+              />
+            )
+          )}
+          <nav className="pagination" aria-label="Previous and next question">
+            <button
+              className="button secondary"
+              disabled={
+                busy ||
+                childBusy ||
+                visibleQuestions.findIndex((question) => question.id === current.id) <= 0
+              }
+              onClick={() =>
+                void navigate(
+                  visibleQuestions[
+                    visibleQuestions.findIndex((question) => question.id === current.id) - 1
+                  ].sourceKey,
+                )
+              }
+            >
+              ← Previous
+            </button>
+            <button
+              className="button"
+              disabled={
+                busy ||
+                childBusy ||
+                visibleQuestions.findIndex((question) => question.id === current.id) >=
+                  visibleQuestions.length - 1 ||
+                !visibleQuestions.length
+              }
+              onClick={() =>
+                void navigate(
+                  visibleQuestions[
+                    visibleQuestions.findIndex((question) => question.id === current.id) + 1
+                  ].sourceKey,
+                )
+              }
+            >
+              Next →
+            </button>
+          </nav>
+        </>
+      )}
+      <p className="disclaimer">
+        Independent practice content; not official live-exam content. Source answers remain
+        authoritative except where flagged for review. AI commentary does not guarantee a pass.
+      </p>
+    </>
+  );
 }

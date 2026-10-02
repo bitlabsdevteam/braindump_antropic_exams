@@ -10,3 +10,11 @@ credential.md
 AGENTS.md
 AGENTS.MD
 prd.md
+
+data/tutor-traces/
+data/tutor-evals/
+output/
+.playwright-cli/
+playwright-report/
+test-results/
+*.tsbuildinfo

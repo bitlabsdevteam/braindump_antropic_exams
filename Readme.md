@@ -1,202 +1,94 @@
-# BrainDump.com — Claude Certification Practice
+# BrainDump.com — Claude certification question coach
 
-BrainDump.com is an independent study companion for people preparing for Claude certification exams. It turns the supplied certification question banks into a focused browser-based practice experience: choose a certification, work through questions, submit or reveal an answer, and use the rationale to understand the decision behind it.
+An independent Next.js study companion built from the four PDFs in `pdf/`. Choose a certification, attempt a question, ask for conceptual hints, then reveal the source answer and rationale. The optional tutor uses the **Microsoft AI Foundry SDK**; grading and progress are handled by application code and SQLite.
 
-The goal is deliberate practice rather than memorization. Learners can study without a clock, or opt into the 120-minute time limit used by the source exam papers when they want to rehearse exam conditions.
-
-> **Important:** BrainDump.com is independent practice content. It is not an official Anthropic product, is not affiliated with Anthropic, and does not provide official live-exam questions or guarantee a passing result. Use it alongside the official certification information, documentation, and hands-on experience.
-
-## What is included
-
-The current question bank contains four certification tracks imported from the PDFs in [`pdf/`](pdf/):
-
-| Certification | Questions | Domains | Recommended time |
-| --- | ---: | ---: | ---: |
-| Claude Certified Architect – Professional | 63 | 7 | 120 minutes |
-| Claude Certified Architect – Foundations | 60 | 5 | 120 minutes |
-| Claude Certified Developer – Foundations | 53 | 8 | 120 minutes |
-| Claude Certified Associate – Foundations | 60 | 7 | 120 minutes |
-
-The application preserves the source order and supports the question formats represented in the source material:
-
-- **Single choice:** select one answer.
-- **Multiple response:** select the required number of answers.
-- **Scenario matching:** match each numbered item to one of the available options.
-
-Questions retain useful study metadata such as certification, domain, scenario where applicable, source key, and source file reference. Answers remain hidden until the learner submits or explicitly reveals them. Once revealed, the practice view shows the correct answer and the source rationale.
-
-## Why this project exists
-
-Certification preparation is most useful when it helps a learner explain *why* an answer is correct. BrainDump.com is designed to support that loop:
-
-1. Pick the certification track that matches your goal.
-2. Choose untimed study or a 120-minute practice session.
-3. Read each prompt carefully and submit your own answer before revealing the key.
-4. Compare your reasoning with the answer and rationale.
-5. Move between questions using the progress indicator and revisit uncertain areas.
-
-The app is intentionally lightweight. It does not require an account, collect personal information, or depend on a hosted database. Authentication, saved learner history, and account-based progress can be added later without making them prerequisites for the core practice flow.
-
-## Features
-
-- Certification landing page populated from the SQLite database.
-- Practice views with progress, question navigation, and responsive layouts.
-- Untimed study mode and optional 120-minute countdown mode.
-- Input controls appropriate to each question type: radio buttons, checkboxes, and matching selectors.
-- Validation that prevents incomplete or impossible submissions.
-- Reversible answer reveal with correct options and rationale.
-- Score, attempted-question, and accuracy indicators during a practice session.
-- Server-side SQLite access so answer mappings are not included in the learner-facing question payload before reveal.
-- Deterministic PDF importer with repeatable database seeding and source-count validation.
-- Optional server-side AI Tutor integration through Microsoft Foundry.
-
-## Technology
-
-- [Next.js](https://nextjs.org/) 15 with the App Router
-- TypeScript
-- React 19
-- SQLite through `better-sqlite3`
-- Plain CSS for the editorial visual system
-- `pdftotext` for extracting the supplied PDF question banks
-- Microsoft Foundry Responses API for the optional AI Tutor
+This application is not affiliated with Anthropic and does not provide official live-exam content or guarantee a pass. The original disclaimer from each PDF is retained in the database and displayed on its practice page.
 
 ## Run locally
 
-### Requirements
+Requirements: **Node.js 22+**, npm, and `pdftotext` on PATH (Poppler; on macOS, `brew install poppler`).
 
-- Node.js compatible with the installed Next.js version
-- npm
-- `pdftotext` available on your PATH for importing the supplied PDFs
-
-On macOS, `pdftotext` is commonly installed through Poppler. Confirm it is available with:
-
-```bash
-pdftotext -v
-```
-
-### Install and start
-
-```bash
-npm install
+```sh
+npm ci
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The development command runs the importer first, so `data/exams.db` is created or refreshed before Next.js starts.
+Open http://localhost:3000. Development and production builds seed the question bank automatically. The AI tutor is optional; ordinary practice, grading, reveal, and progress work without Azure configuration.
 
-For a production-style local run:
-
-```bash
+```sh
 npm run build
-npm run start
+npm start
 ```
 
-## Project commands
+SQLite needs a persistent writable filesystem. Use a single Node application instance for this MVP; do not deploy it to a filesystem that disappears between requests. `EXAMS_DB_PATH` and `LEARNING_DB_PATH` can override the default `data/exams.db` and `data/tutor-sessions.db` locations. Keep both databases and their WAL/SHM files private.
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Import the PDFs and start the Next.js development server. |
-| `npm run build` | Import the PDFs and create an optimized production build. |
-| `npm run start` | Start the previously built production application. |
-| `npm run seed` | Rebuild the local SQLite question bank from the PDFs. |
-| `npm run typecheck` | Run TypeScript validation without emitting files. |
-| `npm run tutor:eval` | Validate the AI Tutor evaluation contract and tool wiring. |
-| `npm run tutor:traces` | Inspect redacted local Tutor trace metadata. |
+## Foundry setup
 
-There is currently no separate lint script configured. The production build includes Next.js lint/type validation for the configured project.
+See [docs/foundry.md](docs/foundry.md) for the SDK, authentication, and live-evaluation instructions. Copy `.env.example` to `.env.local` only if a local file does not already exist, then configure:
 
-## Data import and integrity
+- `FOUNDRY_PROJECT_ENDPOINT`: the HTTPS **project** URL ending in `/api/projects/<project>`.
+- `FOUNDRY_MODEL`: an existing model deployment supporting Responses and strict structured output.
+- `FOUNDRY_CREDENTIAL=default` for local Azure CLI sign-in, or `managed_identity` on Azure.
 
-The source PDFs are the content authority. The importer in [`scripts/seed.mjs`](scripts/seed.mjs) extracts question text, options, question type, domain/scenario metadata, answer mappings, and rationales, then writes normalized records to `data/exams.db`.
+The connection uses `AIProjectClient` from `@azure/ai-projects` and Azure Identity. `getOpenAIClient()` is the SDK's project-scoped Responses interface. The former `FOUNDRY_API_KEY` variable is not used: this SDK uses Microsoft Entra ID. The identity requires appropriate project data-plane access. Secrets and SDK clients remain server-side.
 
-Running `npm run seed` is intentionally repeatable. The importer recreates the certification/question data so it does not accumulate duplicate rows across runs. It also checks that:
+## Learning flow
 
-- Every expected source question has an answer mapping.
-- Every answer maps to an available option or matching item.
-- Supported question types are represented explicitly.
-- Source keys remain unique.
-- The imported question counts match the current source sets.
+- Draft selections and optional reasoning save automatically. Exact selection counts are enforced for single choice, multiple response, and scenario matching.
+- **Submit and reveal** records one immutable, server-graded attempt and shows the PDF answer and rationale. Duplicate submissions do not create extra attempts.
+- **Reveal without answering** records exposure but does not count as a scored attempt.
+- **Try again** starts a fresh draft. Attempts after seeing an answer are labeled review, even when later answered without hints.
+- The coach offers three progressive hint stages, concept explanations, and post-reveal review. Source text remains separate from AI commentary.
+- Suggestions prioritize unresolved mistakes, then unattempted questions in the current domain, then other domains in the same certification. The learner chooses when to navigate.
+- Progress shows independent first-attempt accuracy with sample counts, assisted attempts, review outcomes, and domain breakdowns. It does not claim an exam-readiness or mastery score.
+- The optional 120-minute timer stores an absolute deadline. It survives refresh and continues into review when time expires; coaching remains available throughout.
 
-The generated database is local state and is ignored by Git. Do not manually edit it as a substitute for correcting the source extraction logic. If a PDF changes or an extraction is ambiguous, update the importer and review the resulting records against the source PDF.
+An opaque HttpOnly cookie identifies the anonymous learner. Progress lasts **30 days from creation** in the same browser; clearing cookies loses access. No account is required. Conversations are limited to 12 stored messages per question and expire after two hours idle or 24 hours total; this does not erase learning progress. Expired records are purged on the next API request. **Reset learning progress** deletes all stored progress and conversations for that browser across certifications. Free-text reasoning and tutor messages are sent to the configured model when coaching is requested; avoid entering personal or confidential information.
 
-## Data model
+## Source integrity
 
-The database separates exam metadata from question content and answer data. The main tables are:
+| Certification            | Questions |          Domains |        Time |
+| ------------------------ | --------: | ---------------: | ----------: |
+| Architect – Professional |        63 |                7 | 120 minutes |
+| Architect – Foundations  |        60 | 5; six scenarios | 120 minutes |
+| Developer – Foundations  |        53 |                8 | 120 minutes |
+| Associate – Foundations  |        60 |                7 | 120 minutes |
 
-- `certifications` — title, description, source file, question count, time limit, and disclaimer.
-- `domains` — certification domain numbers and names.
-- `scenarios` — scenario metadata for scenario-based source sets.
-- `questions` — stable source key, order, type, prompt, selection count, and source metadata.
-- `options` — selectable answer options for ordinary questions.
-- `match_items` — numbered prompts for scenario-matching questions.
-- `answers` — structured correct keys and rationale, kept separate from the learner-facing question query.
+The importer reads and validates the title/version, time limit, blueprint, disclaimer, question sequence, answer mappings, and physical PDF page numbers. It preserves stable question IDs and source keys through transactional upserts. Repeated seeding does not erase learning progress. Older malformed child records are reconciled to the source within that transaction and reported.
 
-This separation leaves room for future features such as filters by domain or question type, learner sessions, saved progress, and more detailed performance reporting.
+**Known source discrepancy:** `developer-5.9` requests one answer; its key lists **A, D**, while its rationale supports **C**. All original content is retained and visibly flagged. The question is excluded from scoring and AI coaching, leaving **236 imported questions and 235 scorable questions**. Its disputed source key/rationale can be revealed without scoring. No correction is guessed.
 
-## Optional AI Tutor
+`npm run seed` reports counts, inserts/updates, repairs, and review flags. `node scripts/seed.mjs --strict` fails before database mutation if any question requires source review; it currently fails for the documented Developer discrepancy.
 
-The AI Tutor is an optional server-side study assistant. It can provide concept-level guidance before the official answer is revealed and explain the rationale after reveal. It is not required to use the question practice experience.
+## Commands and verification
 
-To configure it, copy the example environment file and add credentials for a Microsoft Foundry project:
+| Command                   | Purpose                                                                |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `npm run seed`            | Validate/import PDFs, retaining IDs and reporting source conflicts     |
+| `npm run typecheck`       | TypeScript validation                                                  |
+| `npm run format:check`    | Check Prettier formatting                                              |
+| `npm test`                | Isolated database, API, runtime, provider-contract, and importer tests |
+| `npm run test:e2e`        | Chromium integration tests against an isolated local Next.js server    |
+| `npm run tutor:eval`      | Check the documented 28-case evaluation contract                       |
+| `npm run tutor:eval:live` | Execute 28 model cases plus three hint stages using synthetic content  |
+| `npm run tutor:traces`    | Inspect redacted operational metadata                                  |
+| `npm run build`           | Import PDFs and build production application                           |
 
-```bash
-cp .env.example .env.local
-```
+Browser tests use port 3127 and separate databases under ignored `output/playwright/`; install Chromium with `npx playwright install chromium` if needed. Screenshots and retained failure traces are local artifacts. No standalone linter is configured. Prettier checks formatting; TypeScript and the production build validate code. A scoped PostCSS override applies the patched compatible 8.x dependency without a Next.js major upgrade.
 
-Set the values described in `.env.example`, including:
+Live evaluation incurs Foundry usage and requires valid configuration and Azure access. Output conformance checks are automated; source fidelity, hidden-answer disclosure, and teaching quality require reviewing the saved outputs against their rubrics. Reports always start with human review pending. Offline or mocked tests do not establish live model quality.
 
-- `FOUNDRY_PROJECT_ENDPOINT`
-- `FOUNDRY_API_KEY`
-- `FOUNDRY_MODEL` (optional; defaults to the configured project deployment)
+## Architecture and interfaces
 
-The API key is used only on the server. Never commit `.env.local` or place credentials in client-side code. See [`agents/ai-tutor/README.md`](agents/ai-tutor/README.md) for the Tutor architecture, evaluation harness, privacy boundaries, and trace settings.
+- `app/`: database-backed pages and Node API handlers; `components/`: client practice UI.
+- `lib/db.ts`: public questions and separately scoped source answers.
+- `lib/practice.ts`: validation, transactional attempts, grading, progress, and recommendations.
+- `agents/ai-tutor/`: bounded model/tool loop, read-only tools, sessions, and evaluation harness.
 
-## Privacy and security
+`GET /api/practice?certification=<slug>` returns drafts, navigation/timer settings, and aggregate progress, with no answer mappings or rationales. Adding `questionId` returns its current state and approved recommendations. `POST /api/practice` accepts `draft`, `submit`, `retry`, `navigate`, or `start`; question mutations validate certification, identifiers, selections, and current revision. `submit` requires a request ID and explicitly reveals the answer. `DELETE /api/practice` resets all learner data and rotates identity.
 
-- No login or personal information is required for the MVP.
-- The local SQLite database contains practice content, not learner accounts.
-- `.env.local`, credentials, generated databases, and build output are excluded from source control.
-- Imported PDF text is rendered as text and is not treated as executable HTML.
-- Answer data is accessed through server-side code and reveal endpoints rather than being sent with the initial question list.
-- Any future account or session work should preserve least-privilege data access and explicit validation of route parameters and database inputs.
+`POST /api/questions/<id>/answer` explicitly reveals source content; `DELETE` hides it and clears that question's conversation. `POST /api/tutor` accepts a question ID, request ID, current revision, message, and `hint`, `concept`, `review`, or `follow_up` intent. Reveal permissions, selections, reasoning, and hint stage are loaded from server state. `DELETE /api/tutor` clears conversations while preserving learning progress.
 
-## Repository layout
+Answer keys and rationales are absent from initial HTML, serialized question props, progress responses, and hidden tutor context. Tools enforce reveal permissions. Revisions invalidate responses after hide, retry, navigation, or reset. Withholding private answer keys cannot prevent a model from independently inferring an answer, so adversarial live evaluation remains necessary.
 
-```text
-app/                  Next.js routes, pages, and API handlers
-components/           Interactive practice and shared UI components
-lib/                  Server-side database access and shared types
-scripts/seed.mjs      Deterministic PDF importer and SQLite seed script
-pdf/                  Source certification PDFs
-data/                 Generated local SQLite database (ignored by Git)
-agents/ai-tutor/      Optional AI Tutor implementation and harness
-prompts/              Tutor prompts and evaluation notes
-```
-
-## Verification checklist
-
-Before submitting changes, run:
-
-```bash
-npm run seed
-npm run typecheck
-npm run build
-```
-
-Then manually confirm that:
-
-- All four certification cards appear on the landing page.
-- A single-choice, multiple-response, and scenario-matching question render correctly.
-- Answers are hidden initially and reveal with rationale only when requested.
-- Invalid certification slugs produce a safe not-found state.
-- Navigation and progress remain correct when moving through a practice set.
-- The interface is usable with keyboard controls and on narrow screens.
-
-## Contributing
-
-Keep changes focused on the practice experience and preserve source fidelity. Do not silently rewrite or discard source question text, options, answer keys, or rationales. When the PDF extraction is unclear, flag the item for review and keep the source PDF as the authority.
-
-Please do not add official branding, imply Anthropic affiliation, or describe this project as an official exam simulator. New features should remain optional and should not require authentication, hosted infrastructure, or a paid service for the core learner flow.
-
-## Disclaimer
-
-BrainDump.com is an independent educational practice tool. Certification names and related marks belong to their respective owners. The questions and explanations in this repository are provided for study purposes and may not reflect the current live exam. Always check the official certification resources for the latest exam policies, objectives, and preparation guidance.
+Authentication, cross-device progress, generated exam questions, full lessons, and scheduled study planning remain future work.
