@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import PracticeResults from "./PracticeResults";
+import RestartExam from "./RestartExam";
 import { activityLabel, type TutorActivity, type TutorText } from "./TutorResponse";
 import ChiikawaPanel from "./ChiikawaPanel";
 import { readTutorStream } from "../lib/read-tutor-stream";
@@ -745,6 +746,30 @@ export default function PracticeClient({
       setBusy(false);
     }
   }
+  async function restart() {
+    setBusy(true); // Unmounting the question cancels any active Chiikawa stream.
+    setError("");
+    try {
+      const data = await api<{ snapshot: PracticeSnapshot }>("/api/practice", {
+        action: "restart",
+        certification,
+      });
+      setSnapshot(data.snapshot);
+      setNow(Date.now());
+      setIndex(0);
+      setGeneration((value) => value + 1);
+      setReviewOnly(false);
+      setShowResults(false);
+      setConfirmReset(false);
+      const url = new URL(window.location.href);
+      url.searchParams.set("question", questions[0].sourceKey);
+      url.searchParams.delete("view");
+      window.history.replaceState(null, "", url);
+    } finally {
+      setBusy(false);
+      setChildBusy(false);
+    }
+  }
   if (!questions.length)
     return <div className="empty-state">This certification has no questions available yet.</div>;
   if (!snapshot)
@@ -786,6 +811,9 @@ export default function PracticeClient({
             if (key) void navigate(key);
           }}
         />
+        <div className="progress-actions">
+          <RestartExam disabled={busy || childBusy} onRestart={restart} />
+        </div>
         <p className="disclaimer">
           Independent practice content; not official live-exam content. Questions flagged for source
           review are excluded from the mark.
@@ -847,6 +875,9 @@ export default function PracticeClient({
           </ul>
         </details>
         <div className="progress-actions">
+          {snapshot.settings.started && (
+            <RestartExam disabled={busy || childBusy} onRestart={restart} />
+          )}
           {snapshot.settings.started && (snapshot.result.unanswered === 0 || remaining === 0) && (
             <button className="button" disabled={busy || childBusy} onClick={() => void finish()}>
               View results

@@ -18,6 +18,7 @@ const tools: typeof import("../agents/ai-tutor/tools") = require("../agents/ai-t
 const route: typeof import("../app/api/practice/route") = require("../app/api/practice/route");
 const tutorRoute: typeof import("../app/api/tutor/route") = require("../app/api/tutor/route");
 const http: typeof import("../lib/http") = require("../lib/http");
+const memory: typeof import("../agents/ai-tutor/memory/store") = require("../agents/ai-tutor/memory/store");
 const questions = bank.getQuestions("architect-professional");
 const single = questions.find((question) => question.type === "single_choice")!;
 const multiple = questions.find((question) => question.type === "multiple_response")!;
@@ -207,6 +208,171 @@ test("timer keeps its original deadline; progress has no answers; recommendation
   assert.ok(!data.includes('"correctKeys"') && !data.includes('"rationale"'));
 });
 
+test("restart clears all question formats and exposure, resets the timer, and starts independent scoring again", () => {
+  const id = fresh();
+  const slug = "architect-professional";
+  practice.setPracticeSettings(id, slug, "start", true);
+  for (const question of [single, multiple, matching]) {
+    const draft = saveCorrect(id, question);
+    practice.recordAssistance(id, question.id, true);
+    practice.submitAttempt(id, question.id, `before-restart-${question.id}`, draft.revision);
+  }
+  practice.setPracticeSettings(id, slug, "navigate", questions.at(-1)!.sourceKey);
+  sessions
+    .sessionDatabase()
+    .prepare("UPDATE practice_settings SET deadline = 1 WHERE session_id = ?")
+    .run(id);
+  const old = practice.getState(id, single.id);
+  const before = Date.now();
+  const snapshot = practice.restartExam(id, slug);
+  assert.equal(snapshot.settings.started, true);
+  assert.equal(snapshot.settings.questionKey, questions[0].sourceKey);
+  assert.ok(snapshot.settings.deadline! >= before + 120 * 60_000);
+  assert.ok(snapshot.settings.deadline! <= Date.now() + 120 * 60_000);
+  assert.equal(snapshot.progress.attempted, 0);
+  assert.equal(snapshot.result.correct, 0);
+  assert.equal(snapshot.result.unanswered, 63);
+  assert.deepEqual(snapshot.mistakeKeys, []);
+  for (const question of [single, multiple, matching]) {
+    const state = practice.getState(id, question.id);
+    assert.deepEqual(state.selectedKeys, []);
+    assert.equal(state.reasoning, "");
+    assert.equal(state.hintCount, 0);
+    assert.equal(state.visible, false);
+    assert.equal(state.exposed, false);
+    assert.equal(state.submitted, false);
+    assert.equal(state.result, null);
+  }
+  assert.throws(() => practice.saveDraft(id, single.id, ["A"], "stale", old.revision), /changed/);
+  assert.throws(
+    () => practice.submitAttempt(id, single.id, "stale-restart-submit", old.revision),
+    /changed/,
+  );
+  const draft = saveCorrect(id);
+  const submitted = practice.submitAttempt(id, single.id, "after-restart", draft.revision);
+  assert.equal(submitted.state.result?.kind, "independent");
+  assert.equal(practice.practiceSnapshot(id, slug).result.correct, 1);
+  practice.restartExam(id, slug);
+  assert.equal(practice.practiceSnapshot(id, slug).progress.attempted, 0);
+  assert.equal(sessions.ensureSession(id), id);
+});
+
+test("restart is certification and learner scoped, clears exam memory, and preserves untimed practice", () => {
+  const id = fresh();
+  const otherLearner = fresh();
+  const otherQuestion = bank.getQuestions("architect-foundations")[0];
+  const db = sessions.sessionDatabase();
+  for (const [learner, question] of [
+    [id, single],
+    [id, otherQuestion],
+    [otherLearner, single],
+  ] as const) {
+    const slug = practice.questionContext(question.id).certification.slug;
+    practice.setPracticeSettings(learner, slug, "start", false);
+    const draft = saveCorrect(learner, question);
+    practice.submitAttempt(learner, question.id, `scoped-${question.id}`, draft.revision);
+    sessions.addMessage(learner, question.id, {
+      role: "user",
+      content: "I prefer brief examples.",
+    });
+    memory.appendTurn({
+      sessionId: learner,
+      sourceKey: question.sourceKey,
+      requestId: `memory-${question.id}`,
+      revealed: true,
+      user: "I prefer brief examples.",
+      reply: { message: "Prior explanation", concept: "Concept", nextStep: "Next step" },
+      tools: [],
+      promptHash: "restart-test",
+      updates: [
+        {
+          key: question.id === single.id ? "depth" : "style",
+          value: question.id === single.id ? "brief" : "examples",
+          evidence: "I prefer brief examples.",
+        },
+      ],
+    });
+    const turn = memory.recentTurns(learner, question.sourceKey, true, 1)[0];
+    memory.writeCheckpoint({
+      sessionId: learner,
+      sourceKey: question.sourceKey,
+      revealed: true,
+      expectedVersion: 0,
+      through: turn.id,
+      summary: { goal: "Earlier goal", learningNotes: [], openQuestions: [], nextStep: "" },
+      digest: "test",
+      promptHash: "test",
+      inputBytes: 200,
+      outputBytes: 100,
+    });
+    db.prepare("INSERT INTO reveals VALUES (?, ?, ?)").run(learner, question.id, Date.now());
+    db.prepare("INSERT INTO outcomes VALUES (?, ?, ?, ?, ?)").run(
+      learner,
+      question.id,
+      slug,
+      question.domainName,
+      Date.now(),
+    );
+  }
+  const otherExam = practice.practiceSnapshot(id, "architect-foundations");
+  const otherProgress = practice.practiceSnapshot(otherLearner, "architect-professional");
+  const snapshot = practice.restartExam(id, "architect-professional");
+  assert.equal(snapshot.settings.deadline, null);
+  assert.deepEqual(practice.practiceSnapshot(id, "architect-foundations"), otherExam);
+  assert.deepEqual(
+    practice.practiceSnapshot(otherLearner, "architect-professional"),
+    otherProgress,
+  );
+  assert.deepEqual(memory.turns(id, single.sourceKey, true), []);
+  assert.equal(memory.checkpoint(id, single.sourceKey, true), null);
+  assert.equal(memory.turns(id, otherQuestion.sourceKey, true).length, 1);
+  assert.equal(memory.turns(otherLearner, single.sourceKey, true).length, 1);
+  assert.deepEqual(
+    memory.preferences(id).map(({ key }) => key),
+    ["style"],
+  );
+  for (const table of ["messages", "conversation_windows", "reveals", "outcomes"])
+    assert.equal(
+      (
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE session_id = ? AND question_id = ?`)
+          .get(id, single.id) as { n: number }
+      ).n,
+      0,
+    );
+});
+
+test("restart API validates origin and certification and supports all four exam sets", async () => {
+  const id = fresh();
+  function request(certification: unknown, origin = "http://localhost") {
+    return new Request("http://localhost/api/practice", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin, cookie: `ai_tutor_session=${id}` },
+      body: JSON.stringify({ action: "restart", certification }),
+    });
+  }
+  assert.equal(
+    (await route.POST(request("architect-professional", "https://unrelated.example"))).status,
+    403,
+  );
+  assert.equal((await route.POST(request("missing"))).status, 404);
+  assert.equal((await route.POST(request(null))).status, 404);
+  for (const slug of [
+    "architect-professional",
+    "architect-foundations",
+    "developer-foundations",
+    "associate-foundations",
+  ]) {
+    const response = await route.POST(request(slug));
+    assert.equal(response.status, 200);
+    const { snapshot } = await response.json();
+    assert.equal(snapshot.settings.questionKey, bank.getQuestions(slug)[0].sourceKey);
+    assert.equal(snapshot.progress.attempted, 0);
+    assert.ok(!JSON.stringify(snapshot).includes('"correctKeys"'));
+    assert.ok(response.headers.get("set-cookie")?.includes(id));
+  }
+});
+
 test("source discrepancy is retained but cannot be scored", () => {
   const flagged = bank
     .getQuestions("developer-foundations")
@@ -249,6 +415,23 @@ const final = {
   concept: "Compare requirements.",
   nextStep: "What must stay constant?",
 };
+
+test("a tutor completion started before exam restart cannot restore conversation or assistance", async () => {
+  const { request, context } = runFixture();
+  await assert.rejects(
+    runtime.runTutorAgent(request, context, {
+      model: async () => {
+        practice.restartExam(request.sessionId, "architect-professional");
+        return final;
+      },
+    }),
+    /changed/,
+  );
+  assert.deepEqual(sessions.history(request.sessionId, single.id), []);
+  assert.deepEqual(memory.turns(request.sessionId, single.sourceKey, false), []);
+  assert.equal(practice.getState(request.sessionId, single.id).hintCount, 0);
+  sessions.finishRun(request.sessionId, request.requestId);
+});
 
 test("hidden context omits answers and answer tools deny access; successful hint records assistance", async () => {
   const { request, context } = runFixture();

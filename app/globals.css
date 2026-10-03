@@ -1407,6 +1407,28 @@ h2.question-prompt {
 .reset-confirm button {
   margin: 12px 10px 0 0;
 }
+.restart-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 28px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.6;
+  overflow-y: auto;
+}
+.restart-dialog::backdrop {
+  background: rgb(30 28 24 / 45%);
+}
+.restart-dialog h2 {
+  margin-top: 0;
+  font:
+    500 28px Fraunces,
+    serif;
+}
+.restart-dialog .progress-actions {
+  margin-bottom: 0;
+}
 .question-navigation {
   display: flex;
   flex-wrap: wrap;

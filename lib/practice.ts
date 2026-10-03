@@ -296,6 +296,66 @@ export function setPracticeSettings(
       .run(value ? Date.now() + (certification.timeLimitMinutes || 120) * 60_000 : null, id, slug);
   }
 }
+export function restartExam(id: string, slug: string): PracticeSnapshot {
+  const certification = getCertification(slug);
+  if (!certification) throw new PracticeError("Certification not found", 404);
+  const questions = getQuestions(slug);
+  if (!questions.length) throw new PracticeError("This exam has no questions to restart.", 409);
+  const database = sessionDatabase();
+  return database
+    .transaction(() => {
+      const settings = database
+        .prepare(
+          "SELECT deadline FROM practice_settings WHERE session_id = ? AND certification_slug = ?",
+        )
+        .get(id, slug) as { deadline: number | null } | undefined;
+      const keys = JSON.stringify(questions.map((question) => question.sourceKey));
+      const ids = JSON.stringify(questions.map((question) => question.id));
+      database
+        .prepare("DELETE FROM attempts WHERE session_id = ? AND certification_slug = ?")
+        .run(id, slug);
+      // Keep revision counters monotonic: an old tab/request must never match a new attempt.
+      database
+        .prepare(
+          `UPDATE question_state SET draft = '[]', reasoning = '',
+      generation = generation + 1, revision = revision + 1, hint_count = 0, assisted = 0,
+      exposed = 0, visible = 0, submitted = 0, updated_at = ?
+      WHERE session_id = ? AND certification_slug = ?`,
+        )
+        .run(Date.now(), id, slug);
+      // Summaries and preferences grounded in these conversations cascade with their evidence.
+      database
+        .prepare(
+          `DELETE FROM tutor_turns WHERE session_id = ?
+      AND source_key IN (SELECT value FROM json_each(?))`,
+        )
+        .run(id, keys);
+      for (const table of ["messages", "conversation_windows", "reveals", "outcomes"]) {
+        database
+          .prepare(
+            `DELETE FROM ${table} WHERE session_id = ?
+        AND question_id IN (SELECT value FROM json_each(?))`,
+          )
+          .run(id, ids);
+      }
+      database
+        .prepare(
+          `INSERT INTO practice_settings(session_id, certification_slug, question_key, started, deadline)
+      VALUES (?, ?, ?, 1, ?) ON CONFLICT(session_id, certification_slug) DO UPDATE SET
+      question_key = excluded.question_key, started = 1, deadline = excluded.deadline`,
+        )
+        .run(
+          id,
+          slug,
+          questions[0].sourceKey,
+          settings?.deadline != null
+            ? Date.now() + (certification.timeLimitMinutes ?? 120) * 60_000
+            : null,
+        );
+      return practiceSnapshot(id, slug);
+    })
+    .immediate();
+}
 export function practiceSnapshot(id: string, slug: string): PracticeSnapshot {
   if (!getCertification(slug)) throw new PracticeError("Certification not found", 404);
   const questions = getQuestions(slug);

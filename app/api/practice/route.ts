@@ -12,6 +12,7 @@ import {
   PracticeError,
   questionContext,
   recommendations,
+  restartExam,
   retryQuestion,
   saveDraft,
   setPracticeSettings,
@@ -50,6 +51,7 @@ export async function POST(request: Request) {
     const slug = body.certification;
     if (typeof slug !== "string" || !getCertification(slug))
       throw new PracticeError("Certification not found", 404);
+    if (body.action === "restart") return jsonResponse({ snapshot: restartExam(id, slug) }, id);
     if (body.action === "navigate" || body.action === "start") {
       setPracticeSettings(
         id,
