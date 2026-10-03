@@ -1,6 +1,6 @@
 # BrainDump.com — Claude certification question coach
 
-An independent Next.js study companion built from the four PDFs in `pdf/`. Choose a certification, attempt a question, ask for conceptual hints, then reveal the source answer and rationale. The optional tutor uses the **Microsoft AI Foundry SDK**; grading and progress are handled by application code and SQLite.
+An independent Next.js study companion built from the four PDFs in `pdf/`. Choose a certification, attempt a question, ask for conceptual hints, then reveal the source answer and rationale. The tutor connects to **Microsoft Foundry** through the AI Projects SDK or Microsoft's documented resource v1 SDK connection; grading and progress are handled by application code and SQLite.
 
 This application is not affiliated with Anthropic and does not provide official live-exam content or guarantee a pass. The original disclaimer from each PDF is retained in the database and displayed on its practice page.
 
@@ -20,17 +20,17 @@ npm run build
 npm start
 ```
 
-SQLite needs a persistent writable filesystem. Use a single Node application instance for this MVP; do not deploy it to a filesystem that disappears between requests. `EXAMS_DB_PATH` and `LEARNING_DB_PATH` can override the default `data/exams.db` and `data/tutor-sessions.db` locations. Keep both databases and their WAL/SHM files private.
+SQLite needs a persistent writable filesystem. Use a single Node application instance for this MVP; do not deploy it to a filesystem that disappears between requests. `EXAMS_DB_PATH` and `LEARNING_DB_PATH` can override the default `data/exams.db` and `data/tutor-sessions.db` locations. Keep both databases and their WAL/SHM files private. Browser tests use an isolated build directory; set `NEXT_DIST_DIR` to another ignored directory when running a separate verification build alongside the dev server.
 
 ## Foundry setup
 
 See [docs/foundry.md](docs/foundry.md) for the SDK, authentication, and live-evaluation instructions. Copy `.env.example` to `.env.local` only if a local file does not already exist, then configure:
 
-- `FOUNDRY_PROJECT_ENDPOINT`: the HTTPS **project** URL ending in `/api/projects/<project>`.
+- Choose one: `FOUNDRY_PROJECT_ENDPOINT` ending in `/api/projects/<project>`, or `FOUNDRY_OPENAI_ENDPOINT` ending in `/openai/v1`.
 - `FOUNDRY_MODEL`: an existing model deployment supporting Responses and strict structured output.
-- `FOUNDRY_CREDENTIAL=default` for local Azure CLI sign-in, or `managed_identity` on Azure.
+- `FOUNDRY_CREDENTIAL=default` for local Azure CLI sign-in, `managed_identity` on Azure, or `api_key` with `FOUNDRY_API_KEY` for a resource endpoint.
 
-The connection uses `AIProjectClient` from `@azure/ai-projects` and Azure Identity. `getOpenAIClient()` is the SDK's project-scoped Responses interface. The former `FOUNDRY_API_KEY` variable is not used: this SDK uses Microsoft Entra ID. The identity requires appropriate project data-plane access. Secrets and SDK clients remain server-side.
+Project mode uses `AIProjectClient` from `@azure/ai-projects` and Azure Identity. Resource mode uses the `openai` SDK against your explicit Azure endpoint, as documented by Microsoft; it never defaults to the public OpenAI API. Secrets and SDK clients remain server-side. Run `npm run tutor:check` to verify the endpoint, authentication, model deployment, and a real structured response before starting the app. Restart the app after changing `.env.local`.
 
 ## Learning flow
 

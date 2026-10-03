@@ -19,9 +19,12 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 120_000,
     env: {
+      NEXT_DIST_DIR: "output/playwright/next",
       EXAMS_DB_PATH: path.resolve("output/playwright/exams.db"),
       LEARNING_DB_PATH: path.resolve("output/playwright/learning.db"),
       FOUNDRY_PROJECT_ENDPOINT: "",
+      FOUNDRY_OPENAI_ENDPOINT: "",
+      FOUNDRY_API_KEY: "",
       FOUNDRY_MODEL: "",
     },
   },

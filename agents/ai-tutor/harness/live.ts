@@ -8,6 +8,8 @@ import {
   type FoundryUsage,
 } from "../../../lib/foundry";
 import { getTutorPrompt } from "../context/prompt";
+import { maxCalls, runtimeInstructions } from "../runtime";
+import { TutorServiceError, tutorFailure } from "../../../lib/tutor-errors";
 
 type Rubric = {
   id: number;
@@ -211,15 +213,17 @@ export async function runEvaluationCase(
   let strictParser: "pass" | "fail" | "not_evaluated" = "not_evaluated";
   let error: { kind: string; status?: number } | undefined;
   const prompt = getTutorPrompt();
-  const system = `${prompt.text}\n\nYou operate through a bounded agent harness. Tools: get_question_context, find_related_questions, get_revealed_answer, get_session_learning_context. Choose one tool or final response. Use get_revealed_answer only when answerRevealed is true. Never claim tool results you did not receive.`;
   try {
-    for (let call = 0; call < 4; call += 1) {
-      if (controller.signal.aborted) throw new Error("deadline");
+    for (let call = 0; call < maxCalls; call += 1) {
+      if (controller.signal.aborted) throw new TutorServiceError("timeout");
       const decision = await new Promise<AgentModelOutput>((resolve, reject) => {
-        const stopped = () => reject(new Error("deadline"));
+        const stopped = () => reject(new TutorServiceError("timeout"));
         controller.signal.addEventListener("abort", stopped, { once: true });
         (options.model ?? askTutorAgent)({
-          system,
+          system: runtimeInstructions(
+            maxCalls - call,
+            Math.min(maxCalls - 1 - toolDecisions.length, maxCalls - call - 1),
+          ),
           input: JSON.stringify({ ...testCase.fixture, toolResults }),
           signal: controller.signal,
           onUsage: (entry) => usage.push(entry),
@@ -233,13 +237,18 @@ export async function runEvaluationCase(
         outcome = "completed";
         break;
       }
+      if (call === maxCalls - 1) {
+        toolDecisions.push({ tool: decision.tool, allowed: false, reason: "final_call_reserved" });
+        outcome = "final_required";
+        break;
+      }
       const fingerprint = JSON.stringify(decision);
       if (seen.has(fingerprint)) {
         outcome = "repeated_tool";
         break;
       }
       seen.add(fingerprint);
-      if (toolDecisions.length >= 4) {
+      if (toolDecisions.length >= maxCalls - 1) {
         outcome = "tool_limit";
         break;
       }
@@ -273,16 +282,23 @@ export async function runEvaluationCase(
       toolResults.push({ tool: decision.tool, result });
     }
   } catch (caught) {
-    const candidate = caught as { name?: string; message?: string; status?: unknown };
-    const invalid =
-      typeof candidate.message === "string" &&
-      /^Foundry returned (invalid|an invalid|an empty)/.test(candidate.message);
-    if (invalid) strictParser = "fail";
-    outcome = controller.signal.aborted ? "timeout" : "error";
+    // Keep compatibility with old offline fixtures while using typed provider failures.
+    const legacyInvalid =
+      caught instanceof Error &&
+      /^Foundry returned (invalid|an invalid|an empty)/.test(caught.message);
+    const failure = tutorFailure(
+      controller.signal.aborted
+        ? new TutorServiceError("timeout")
+        : legacyInvalid
+          ? new TutorServiceError("invalid_output")
+          : caught,
+    );
+    if (failure.code === "invalid_output") strictParser = "fail";
+    outcome = failure.code === "timeout" ? "timeout" : "error";
     // Never persist provider error strings: they can contain endpoints or request details.
     error = {
-      kind: controller.signal.aborted ? "deadline" : invalid ? "invalid_output" : "provider_error",
-      ...(typeof candidate.status === "number" ? { status: candidate.status } : {}),
+      kind: failure.code,
+      ...(failure.status === undefined ? {} : { status: failure.status }),
     };
   } finally {
     clearTimeout(timeout);
@@ -341,10 +357,8 @@ async function main() {
     );
     // Authentication/configuration failures affect every fixture; stop without repeated calls.
     if (
-      result.error?.status === 401 ||
-      result.error?.status === 403 ||
-      result.error?.status === 404 ||
-      result.error?.status === 400
+      result.error &&
+      ["configuration", "authentication", "deployment", "request"].includes(result.error.kind)
     )
       break;
   }
@@ -365,10 +379,12 @@ if (
 ) {
   main().catch((error: unknown) => {
     console.error(
-      error instanceof Error &&
-        /^(FOUNDRY_|Use optional|Select case|Expected documented)/.test(error.message)
-        ? error.message
-        : "Live evaluation could not start; check Foundry configuration and local file access.",
+      error instanceof TutorServiceError
+        ? `${tutorFailure(error).message} ${tutorFailure(error).action}`
+        : error instanceof Error &&
+            /^(FOUNDRY_|Use optional|Select case|Expected documented)/.test(error.message)
+          ? error.message
+          : "Live evaluation could not start; check Foundry configuration and local file access.",
     );
     process.exitCode = 1;
   });

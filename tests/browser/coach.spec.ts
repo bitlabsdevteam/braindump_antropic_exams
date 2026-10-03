@@ -62,9 +62,7 @@ test("provider failure leaves practice usable; progress reset deletes saved atte
 }) => {
   await start(page);
   await page.getByRole("button", { name: "Get a hint", exact: true }).click();
-  await expect(
-    page.getByRole("alert").filter({ hasText: "temporarily unavailable" }),
-  ).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "setup is incomplete" })).toBeVisible();
   await page.getByRole("radio").first().check();
   await page.getByRole("button", { name: "Submit and reveal", exact: true }).click();
   await expect(page.getByRole("region", { name: "Source answer", exact: true })).toBeVisible();

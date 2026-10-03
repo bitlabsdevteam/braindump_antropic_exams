@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { TutorServiceError } from "../lib/tutor-errors";
 
 const directory = mkdtempSync(path.join(tmpdir(), "question-coach-test-"));
 process.env.EXAMS_DB_PATH = path.join(directory, "exams.db");
@@ -266,6 +267,213 @@ test("hidden context omits answers and answer tools deny access; successful hint
   sessions.finishRun(request.sessionId, request.requestId);
 });
 
+test("rejected tutor prompts never enter history and a later safe exchange preserves valid turns", async () => {
+  for (const hasHistory of [false, true]) {
+    const id = fresh();
+    const prior: import("../agents/ai-tutor/types").TutorMessage[] = hasHistory
+      ? [
+          { role: "user", content: "Explain a requirement." },
+          { role: "assistant", content: "A requirement describes what must hold." },
+        ]
+      : [];
+    for (const message of prior) sessions.addMessage(id, single.id, message);
+    const rejected = runFixture(id);
+    rejected.request.message = "Synthetic service-filtered prompt";
+    const providerError = { status: 400, error: { code: "content_filter" } };
+    await assert.rejects(
+      runtime.runTutorAgent(rejected.request, rejected.context, {
+        model: async ({ input }) => {
+          const supplied = JSON.parse(input);
+          assert.equal(supplied.learnerMessage, rejected.request.message);
+          assert.deepEqual(supplied.conversation, prior);
+          assert.deepEqual(sessions.history(id, single.id), prior);
+          throw providerError;
+        },
+      }),
+      (error: unknown) => error === providerError,
+    );
+    sessions.finishRun(id, rejected.request.requestId);
+    assert.deepEqual(sessions.history(id, single.id), prior);
+    assert.equal(practice.getState(id, single.id).hintCount, 0);
+
+    const safe = runFixture(id);
+    safe.request.message = "Help me identify the constraint.";
+    await runtime.runTutorAgent(safe.request, safe.context, {
+      model: async ({ input }) => {
+        assert.ok(!input.includes(rejected.request.message));
+        assert.deepEqual(JSON.parse(input).conversation, prior);
+        assert.deepEqual(sessions.history(id, single.id), prior);
+        return final;
+      },
+    });
+    sessions.finishRun(id, safe.request.requestId);
+    assert.deepEqual(sessions.history(id, single.id), [
+      ...prior,
+      { role: "user", content: safe.request.message },
+      {
+        role: "assistant",
+        content: JSON.stringify({
+          message: final.message,
+          concept: final.concept,
+          nextStep: final.nextStep,
+        }),
+      },
+    ]);
+    assert.equal(practice.getState(id, single.id).hintCount, 1);
+  }
+});
+
+test("legacy incomplete turns and a pruned leading assistant are excluded without deleting valid history", async () => {
+  const id = fresh();
+  const completed: import("../agents/ai-tutor/types").TutorMessage[] = [
+    { role: "user", content: "A prior valid question." },
+    { role: "assistant", content: "A prior valid explanation." },
+  ];
+  for (const message of [
+    { role: "assistant" as const, content: "Pruned orphan assistant." },
+    ...completed,
+    { role: "user" as const, content: "Legacy service-filtered user-only request." },
+  ])
+    sessions.addMessage(id, single.id, message);
+
+  for (const message of ["A safe follow-up.", "Another safe follow-up."]) {
+    const { request, context } = runFixture(id);
+    request.message = message;
+    await runtime.runTutorAgent(request, context, {
+      model: async ({ input }) => {
+        assert.deepEqual(JSON.parse(input).conversation, completed);
+        assert.ok(!input.includes("Legacy service-filtered user-only request."));
+        assert.ok(!input.includes("Pruned orphan assistant."));
+        return final;
+      },
+    });
+    sessions.finishRun(id, request.requestId);
+    completed.push(
+      { role: "user", content: message },
+      {
+        role: "assistant",
+        content: JSON.stringify({
+          message: final.message,
+          concept: final.concept,
+          nextStep: final.nextStep,
+        }),
+      },
+    );
+  }
+  const stored = sessions.history(id, single.id);
+  assert.ok(
+    stored.some((message) => message.content === "Legacy service-filtered user-only request."),
+  );
+  assert.ok(stored.some((message) => message.content === "A prior valid explanation."));
+  assert.equal(practice.getState(id, single.id).hintCount, 2);
+});
+
+test("four-call tutor chain reserves its final answer and returns only named recommendation results", async () => {
+  const { request, context } = runFixture();
+  const sequence = [
+    "get_question_context",
+    "get_session_learning_context",
+    "find_related_questions",
+  ] as const;
+  let calls = 0;
+  let recommendedIds: number[] = [];
+  const response = await runtime.runTutorAgent(request, context, {
+    model: async ({ input, system }) => {
+      const supplied = JSON.parse(input);
+      assert.match(
+        system,
+        new RegExp(`Model calls remaining, including this call: ${4 - calls}\\.`),
+      );
+      assert.match(system, new RegExp(`Tool calls remaining: ${3 - calls}\\.`));
+      assert.deepEqual(
+        supplied.toolResults.map((entry: { tool: string }) => entry.tool),
+        sequence.slice(0, calls),
+      );
+      assert.ok(!input.includes('"correctKeys"') && !input.includes('"rationale"'));
+      if (calls < 3) return { type: "tool", tool: sequence[calls++], arguments: {} };
+      calls += 1;
+      assert.match(system, /final-only call/);
+      const recommendations = supplied.toolResults[2].result as { id: number }[];
+      recommendedIds = recommendations.map((item) => item.id);
+      assert.ok(recommendedIds.length > 0);
+      return {
+        ...final,
+        relatedQuestionIds: [single.id, ...recommendedIds, Number.MAX_SAFE_INTEGER],
+      };
+    },
+  });
+  assert.equal(calls, 4);
+  assert.deepEqual(
+    response.relatedQuestions.map((question) => question.id),
+    recommendedIds,
+  );
+  assert.equal(practice.getState(request.sessionId, single.id).hintCount, 1);
+  sessions.finishRun(request.sessionId, request.requestId);
+});
+
+test("a tool requested on the reserved final call is rejected without another model invocation", async () => {
+  const { request, context } = runFixture();
+  const sequence = [
+    "get_question_context",
+    "get_session_learning_context",
+    "find_related_questions",
+    "get_revealed_answer",
+  ] as const;
+  let calls = 0;
+  await assert.rejects(
+    runtime.runTutorAgent(request, context, {
+      model: async ({ system }) => {
+        if (calls === 3) assert.match(system, /final-only call/);
+        return { type: "tool", tool: sequence[calls++], arguments: {} };
+      },
+    }),
+    /response limit/,
+  );
+  assert.equal(calls, 4);
+  assert.equal(
+    sessions.history(request.sessionId, single.id).filter((message) => message.role === "assistant")
+      .length,
+    0,
+  );
+  assert.equal(practice.getState(request.sessionId, single.id).hintCount, 0);
+  sessions.finishRun(request.sessionId, request.requestId);
+});
+
+test("live evaluator shares runtime budgets and final-only behavior", async () => {
+  const live: typeof import("../agents/ai-tutor/harness/live") = require("../agents/ai-tutor/harness/live");
+  const fixture = live.buildEvaluationCases()[0];
+  const sequence = [
+    "get_question_context",
+    "get_session_learning_context",
+    "find_related_questions",
+  ] as const;
+  for (const finish of [true, false]) {
+    let calls = 0;
+    const result = await live.runEvaluationCase(fixture, {
+      model: async ({ input, system }) => {
+        const supplied = JSON.parse(input);
+        assert.equal(system, runtime.runtimeInstructions(4 - calls, 3 - calls));
+        assert.deepEqual(
+          supplied.toolResults.map((entry: { tool: string }) => entry.tool),
+          sequence.slice(0, calls),
+        );
+        if (calls < 3) return { type: "tool", tool: sequence[calls++], arguments: {} };
+        calls += 1;
+        return finish ? final : { type: "tool", tool: "get_revealed_answer", arguments: {} };
+      },
+    });
+    assert.equal(calls, 4);
+    assert.equal(result.outcome, finish ? "completed" : "final_required");
+    assert.equal(result.humanReview, "pending");
+    if (!finish)
+      assert.deepEqual(result.toolDecisions.at(-1), {
+        tool: "get_revealed_answer",
+        allowed: false,
+        reason: "final_call_reserved",
+      });
+  }
+});
+
 test("a hide/reveal race prevents publishing a stale post-reveal response", async () => {
   const id = fresh();
   practice.revealAnswer(id, single.id);
@@ -340,8 +548,26 @@ test("harness retries only transient errors and rejects loops and wall-clock tim
       timeoutMs: 15,
       model: () => new Promise(() => {}),
     }),
-    /deadline/,
+    (error: unknown) => error instanceof TutorServiceError && error.code === "timeout",
   );
+});
+
+test("live evaluation classifies typed provider failures without copying sensitive error messages", async () => {
+  const live: typeof import("../agents/ai-tutor/harness/live") = require("../agents/ai-tutor/harness/live");
+  const fixture = live.buildEvaluationCases()[0];
+  for (const code of ["invalid_output", "incomplete", "timeout", "authentication"] as const) {
+    const failure = new TutorServiceError(code);
+    failure.message = "sensitive-provider-request-details";
+    const result = await live.runEvaluationCase(fixture, {
+      model: async () => {
+        throw failure;
+      },
+    });
+    assert.equal(result.error?.kind, code);
+    assert.equal(result.strictParser, code === "invalid_output" ? "fail" : "not_evaluated");
+    assert.equal(result.outcome, code === "timeout" ? "timeout" : "error");
+    assert.ok(!JSON.stringify(result).includes("sensitive-provider-request-details"));
+  }
 });
 
 test("only one run is active; stale runs can be reclaimed", () => {
@@ -427,6 +653,92 @@ test("routes validate malformed bodies, cross-origin writes, certification scope
   const cookie = http.jsonResponse({}, id).headers.get("set-cookie")!;
   assert.match(cookie, /HttpOnly/i);
   assert.match(cookie, /SameSite=lax/i);
+});
+
+test("real tutor route reports missing configuration safely and releases its run without learning credit", async (t) => {
+  const values = {
+    FOUNDRY_PROJECT_ENDPOINT: "",
+    FOUNDRY_OPENAI_ENDPOINT: "",
+    FOUNDRY_MODEL: "private-test-deployment",
+    FOUNDRY_API_KEY: "private-test-api-key",
+  };
+  const beforeEnvironment = Object.fromEntries(
+    Object.keys(values).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, values);
+  t.after(() => {
+    for (const [key, value] of Object.entries(beforeEnvironment)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const logged: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args);
+  });
+  const transport = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("Unexpected network access without configuration");
+  });
+  const id = fresh();
+  const beforeState = practice.getState(id, single.id);
+  const beforeProgress = practice.practiceSnapshot(id, "architect-professional").progress;
+  const requestId = "configuration-failure-run";
+  const response = await tutorRoute.POST(
+    new Request("http://localhost/api/tutor", {
+      method: "POST",
+      headers: { cookie: `ai_tutor_session=${id}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        questionId: single.id,
+        requestId,
+        revision: beforeState.revision,
+        intent: "hint",
+        message: "private-test-learner-message",
+      }),
+    }),
+  );
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.code, "configuration");
+  assert.match(body.error, /setup is incomplete/);
+  assert.equal(transport.mock.callCount(), 0);
+  assert.equal(sessions.runActive(id, requestId), false);
+  assert.deepEqual(
+    sessions
+      .sessionDatabase()
+      .prepare("SELECT state FROM runs WHERE session_id = ? AND request_id = ?")
+      .get(id, requestId),
+    { state: "done" },
+  );
+  assert.deepEqual(practice.getState(id, single.id), beforeState);
+  assert.deepEqual(
+    practice.practiceSnapshot(id, "architect-professional").progress,
+    beforeProgress,
+  );
+  assert.deepEqual(
+    sessions
+      .sessionDatabase()
+      .prepare(
+        "SELECT assisted, hint_count FROM question_state WHERE session_id = ? AND source_key = ?",
+      )
+      .get(id, single.sourceKey),
+    { assisted: 0, hint_count: 0 },
+  );
+  assert.equal(
+    sessions.history(id, single.id).filter((message) => message.role === "assistant").length,
+    0,
+  );
+  assert.equal(logged.length, 1);
+  assert.equal((logged[0][1] as { code: string }).code, "configuration");
+  const publicOutput = JSON.stringify({ body, logged });
+  for (const privateValue of [
+    values.FOUNDRY_MODEL,
+    values.FOUNDRY_API_KEY,
+    "private-test-learner-message",
+    id,
+  ])
+    assert.ok(!publicOutput.includes(privateValue));
+  assert.equal(sessions.beginRun(id, "after-configuration-failure"), true);
+  sessions.finishRun(id, "after-configuration-failure");
 });
 
 function wrongSelection(question: import("../lib/types").Question) {

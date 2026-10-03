@@ -1,5 +1,11 @@
 import { AIProjectClient } from "@azure/ai-projects";
-import { DefaultAzureCredential, ManagedIdentityCredential } from "@azure/identity";
+import {
+  DefaultAzureCredential,
+  ManagedIdentityCredential,
+  getBearerTokenProvider,
+} from "@azure/identity";
+import OpenAI from "openai";
+import { TutorServiceError } from "./tutor-errors";
 
 export type TutorModelInput = { system: string; input: string };
 export type TutorModelOutput = { message: string; concept: string; nextStep: string };
@@ -51,17 +57,21 @@ export const agentSchema = {
   required: ["type", "tool", "arguments", "message", "concept", "nextStep", "relatedQuestionIds"],
 };
 
-let client: ReturnType<AIProjectClient["getOpenAIClient"]> | undefined;
+let client: OpenAI | undefined;
 let clientKey: string | undefined;
 
 export function foundryConfiguration() {
-  const raw = process.env.FOUNDRY_PROJECT_ENDPOINT?.trim();
-  if (!raw) throw new Error("FOUNDRY_PROJECT_ENDPOINT is not configured");
+  const project = process.env.FOUNDRY_PROJECT_ENDPOINT?.trim();
+  const resource = process.env.FOUNDRY_OPENAI_ENDPOINT?.trim();
+  if ((!project && !resource) || (project && resource))
+    throw new TutorServiceError("configuration");
+  const mode = project ? "project" : "resource";
+  const raw = (project || resource)!;
   let endpoint: URL;
   try {
     endpoint = new URL(raw);
   } catch {
-    throw new Error("FOUNDRY_PROJECT_ENDPOINT must be a valid project URL");
+    throw new TutorServiceError("configuration");
   }
   if (
     endpoint.protocol !== "https:" ||
@@ -69,25 +79,37 @@ export function foundryConfiguration() {
     endpoint.password ||
     endpoint.search ||
     endpoint.hash ||
-    !/^\/api\/projects\/[^/]+\/?$/.test(endpoint.pathname)
+    !(mode === "project" ? /^\/api\/projects\/[^/]+\/?$/ : /^\/openai\/v1\/?$/).test(
+      endpoint.pathname,
+    )
   ) {
-    throw new Error(
-      "FOUNDRY_PROJECT_ENDPOINT must be an HTTPS Foundry project URL ending in /api/projects/<project>",
-    );
+    throw new TutorServiceError("configuration");
   }
   const model = process.env.FOUNDRY_MODEL?.trim();
   if (!model || model.length > 256 || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(model))
-    throw new Error("FOUNDRY_MODEL must name your existing Foundry model deployment");
+    throw new TutorServiceError("configuration");
   const credential =
     process.env.FOUNDRY_CREDENTIAL?.trim() ||
-    (process.env.NODE_ENV === "production" ? "managed_identity" : "default");
-  if (credential !== "default" && credential !== "managed_identity")
-    throw new Error("FOUNDRY_CREDENTIAL must be default or managed_identity");
+    (mode === "resource" && process.env.FOUNDRY_API_KEY?.trim()
+      ? "api_key"
+      : process.env.NODE_ENV === "production"
+        ? "managed_identity"
+        : "default");
+  if (
+    !["default", "managed_identity", "api_key"].includes(credential) ||
+    (credential === "api_key" && (mode !== "resource" || !process.env.FOUNDRY_API_KEY?.trim()))
+  )
+    throw new TutorServiceError("configuration");
+  const maxOutputTokens = Number(process.env.FOUNDRY_MAX_OUTPUT_TOKENS || 4096);
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 512 || maxOutputTokens > 16384)
+    throw new TutorServiceError("configuration");
   return {
+    mode,
     endpoint: endpoint.href.replace(/\/$/, ""),
     model,
     credential,
     clientId: process.env.AZURE_CLIENT_ID?.trim(),
+    maxOutputTokens,
   };
 }
 
@@ -97,6 +119,8 @@ function getClient() {
     configuration.endpoint,
     configuration.credential,
     configuration.clientId,
+    configuration.mode,
+    configuration.credential === "api_key" ? process.env.FOUNDRY_API_KEY : null,
   ]);
   if (!client || clientKey !== key) {
     const credential =
@@ -105,14 +129,30 @@ function getClient() {
             configuration.clientId ? { clientId: configuration.clientId } : {},
           )
         : new DefaultAzureCredential();
-    const project = new AIProjectClient(configuration.endpoint, credential, {
-      retryOptions: { maxRetries: 0 },
-    });
     // The application harness owns retries and deadlines. Do not duplicate them in the SDK.
-    client = project.getOpenAIClient({ maxRetries: 0, timeout: 55_000 });
+    if (configuration.mode === "project") {
+      const project = new AIProjectClient(configuration.endpoint, credential, {
+        retryOptions: { maxRetries: 0 },
+      });
+      client = project.getOpenAIClient({ maxRetries: 0, timeout: 55_000 });
+    } else {
+      // Microsoft documents the OpenAI SDK for Foundry resource v1 endpoints.
+      // Always set baseURL explicitly: no request goes to the OpenAI public API.
+      client = new OpenAI({
+        baseURL: configuration.endpoint,
+        // Model responses are private and must never enter Next.js's fetch cache.
+        fetch: (url, init) => fetch(url, { ...init, cache: "no-store" }),
+        apiKey:
+          configuration.credential === "api_key"
+            ? process.env.FOUNDRY_API_KEY!.trim()
+            : getBearerTokenProvider(credential, "https://ai.azure.com/.default"),
+        maxRetries: 0,
+        timeout: 55_000,
+      });
+    }
     clientKey = key;
   }
-  return { client, model: configuration.model };
+  return { client, model: configuration.model, maxOutputTokens: configuration.maxOutputTokens };
 }
 
 export function isTransientFoundryError(error: unknown): boolean {
@@ -121,6 +161,7 @@ export function isTransientFoundryError(error: unknown): boolean {
   const status = value.status ?? value.statusCode;
   if (typeof status === "number") return [408, 429, 500, 502, 503, 504].includes(status);
   return (
+    error instanceof OpenAI.APIConnectionError ||
     value.name === "APIConnectionError" ||
     value.name === "APIConnectionTimeoutError" ||
     ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN"].includes(String(value.code))
@@ -142,12 +183,12 @@ function parseTutorOutput(value: unknown): TutorModelOutput {
     !validText(value.concept) ||
     !validText(value.nextStep)
   )
-    throw new Error("Foundry returned an invalid tutor response");
+    throw new TutorServiceError("invalid_output");
   return { message: value.message, concept: value.concept, nextStep: value.nextStep };
 }
 
 export function parseAgentModelOutput(value: unknown): AgentModelOutput {
-  const invalid = () => new Error("Foundry returned an invalid agent decision");
+  const invalid = () => new TutorServiceError("invalid_output");
   if (
     !object(value) ||
     Object.keys(value).some(
@@ -223,14 +264,14 @@ async function generate(
   schema: Record<string, unknown>,
   name: string,
 ): Promise<unknown> {
-  const { client: openai, model } = getClient();
+  const { client: openai, model, maxOutputTokens } = getClient();
   const response = await openai.responses.create(
     {
       model,
       instructions: system,
       input,
       store: false,
-      max_output_tokens: 2000,
+      max_output_tokens: maxOutputTokens,
       text: { format: { type: "json_schema", name, schema, strict: true } },
     },
     { signal },
@@ -241,15 +282,13 @@ async function generate(
       outputTokens: response.usage.output_tokens,
       totalTokens: response.usage.total_tokens,
     });
-  if (response.status !== "completed")
-    throw new Error("Foundry could not complete the tutor response");
+  if (response.status !== "completed") throw new TutorServiceError("incomplete");
   const raw = response.output_text?.trim();
-  if (!raw || raw.length > 32_000)
-    throw new Error("Foundry returned an empty or oversized response");
+  if (!raw || raw.length > 32_000) throw new TutorServiceError("invalid_output");
   try {
     return JSON.parse(raw);
   } catch {
-    throw new Error("Foundry returned invalid JSON");
+    throw new TutorServiceError("invalid_output");
   }
 }
 

@@ -15,6 +15,7 @@ import {
 } from "../../../lib/http";
 import { getState, PracticeError, questionContext } from "../../../lib/practice";
 import type { TutorIntent } from "../../../lib/practice-types";
+import { tutorFailure } from "../../../lib/tutor-errors";
 
 export const runtime = "nodejs";
 export async function POST(request: Request) {
@@ -78,13 +79,20 @@ export async function POST(request: Request) {
     return jsonResponse({ ...tutor, state: getState(sessionId, questionId as number) }, sessionId);
   } catch (error) {
     if (error instanceof PracticeError) return errorResponse(error, sessionId);
+    const failure = tutorFailure(error);
+    console.error("[ai-tutor]", {
+      requestId,
+      code: failure.code,
+      status: failure.status,
+      action: failure.action,
+    });
     return jsonResponse(
       {
-        error:
-          "The AI tutor is temporarily unavailable. Your practice progress is saved; please try again.",
+        error: failure.message,
+        code: failure.code,
       },
       sessionId,
-      503,
+      failure.code === "content_filter" ? 422 : 503,
     );
   } finally {
     if (acquired) finishRun(sessionId, requestId);

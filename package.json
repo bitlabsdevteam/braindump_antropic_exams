@@ -13,6 +13,7 @@
     "seed": "node scripts/seed.mjs",
     "tutor:eval": "node agents/ai-tutor/harness/eval.mjs",
     "tutor:traces": "node agents/ai-tutor/harness/traces.mjs",
+    "tutor:check": "node --env-file-if-exists=.env.local --import tsx scripts/check-foundry.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
     "tutor:eval:live": "node --env-file-if-exists=.env.local --import tsx agents/ai-tutor/harness/live.ts",
@@ -24,6 +25,7 @@
     "@azure/identity": "^4.13.3",
     "better-sqlite3": "^11.10.0",
     "next": "^15.5.4",
+    "openai": "^6.49.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

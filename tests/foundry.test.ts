@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DefaultAzureCredential } from "@azure/identity";
+import OpenAI from "openai";
 import {
   agentSchema,
+  askTutorAgent,
   foundryConfiguration,
   isTransientFoundryError,
   parseAgentModelOutput,
   type AgentModelOutput,
 } from "../lib/foundry";
+import { TutorServiceError, tutorFailure } from "../lib/tutor-errors";
 import { buildEvaluationCases, runEvaluationCase } from "../agents/ai-tutor/harness/live";
 
 const finalWire = {
@@ -56,6 +60,7 @@ test("Foundry uses valid project configuration and deterministic credential defa
       FOUNDRY_PROJECT_ENDPOINT: "https://example.services.ai.azure.com/api/projects/tutor/",
       FOUNDRY_MODEL: "tutor-deployment",
       FOUNDRY_CREDENTIAL: undefined,
+      FOUNDRY_OPENAI_ENDPOINT: undefined,
       NODE_ENV: "development",
     },
     () => {
@@ -87,6 +92,223 @@ test("Foundry uses valid project configuration and deterministic credential defa
       withEnvironment({ FOUNDRY_CREDENTIAL: "api_key" }, () => assert.throws(foundryConfiguration));
     },
   );
+});
+
+test("Foundry resource endpoints support explicit key or Entra auth without ambiguous fallback", () => {
+  withEnvironment(
+    {
+      FOUNDRY_PROJECT_ENDPOINT: undefined,
+      FOUNDRY_OPENAI_ENDPOINT: "https://example.openai.azure.com/openai/v1/",
+      FOUNDRY_MODEL: "tutor-deployment",
+      FOUNDRY_CREDENTIAL: "api_key",
+      FOUNDRY_API_KEY: "test-secret",
+      FOUNDRY_MAX_OUTPUT_TOKENS: "4096",
+    },
+    () => {
+      assert.equal(foundryConfiguration().mode, "resource");
+      assert.equal(foundryConfiguration().credential, "api_key");
+      assert.equal(foundryConfiguration().endpoint, "https://example.openai.azure.com/openai/v1");
+      assert.equal(JSON.stringify(foundryConfiguration()).includes("test-secret"), false);
+      withEnvironment({ FOUNDRY_CREDENTIAL: undefined }, () =>
+        assert.equal(foundryConfiguration().credential, "api_key"),
+      );
+      withEnvironment({ FOUNDRY_CREDENTIAL: "default" }, () =>
+        assert.equal(foundryConfiguration().credential, "default"),
+      );
+      withEnvironment(
+        { FOUNDRY_PROJECT_ENDPOINT: "https://example.services.ai.azure.com/api/projects/tutor" },
+        () => assert.throws(foundryConfiguration),
+      );
+      withEnvironment({ FOUNDRY_API_KEY: "" }, () => assert.throws(foundryConfiguration));
+      for (const value of ["511", "16385", "NaN", "2000.5"])
+        withEnvironment({ FOUNDRY_MAX_OUTPUT_TOKENS: value }, () =>
+          assert.throws(foundryConfiguration),
+        );
+      for (const value of [
+        "http://example.com/openai/v1",
+        "https://example.com/api/projects/tutor",
+        "https://example.com/openai/v1?key=secret",
+      ])
+        withEnvironment({ FOUNDRY_OPENAI_ENDPOINT: value }, () =>
+          assert.throws(foundryConfiguration),
+        );
+    },
+  );
+});
+
+test("resource SDK sends bounded strict Responses requests to Azure and preserves provider failures", async (t) => {
+  const values = {
+    FOUNDRY_PROJECT_ENDPOINT: "",
+    FOUNDRY_OPENAI_ENDPOINT: "https://sdk-test.openai.azure.com/openai/v1",
+    FOUNDRY_MODEL: "test-deployment",
+    FOUNDRY_API_KEY: "test-only-key",
+    FOUNDRY_CREDENTIAL: "api_key",
+    FOUNDRY_MAX_OUTPUT_TOKENS: "4096",
+  };
+  const before = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, values);
+  t.after(() => {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  let calls = 0;
+  let status = 200;
+  let completed = true;
+  let output = finalWire;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    calls++;
+    assert.equal(String(url), "https://sdk-test.openai.azure.com/openai/v1/responses");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-only-key");
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.model, "test-deployment");
+    assert.equal(body.store, false);
+    assert.equal(body.max_output_tokens, 4096);
+    assert.deepEqual(body.text.format.schema, agentSchema);
+    assert.equal(body.text.format.strict, true);
+    return Response.json(
+      status === 200
+        ? {
+            id: "response-test",
+            object: "response",
+            status: completed ? "completed" : "incomplete",
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: JSON.stringify(output), annotations: [] }],
+              },
+            ],
+            usage: { input_tokens: 7, output_tokens: 5, total_tokens: 12 },
+          }
+        : { error: { message: "private provider detail test-only-key", code: "server_error" } },
+      { status },
+    );
+  });
+  let usage;
+  const result = await askTutorAgent({
+    system: "test",
+    input: "test",
+    onUsage: (value) => {
+      usage = value;
+    },
+  });
+  assert.equal(result.type, "final");
+  assert.deepEqual(usage, { inputTokens: 7, outputTokens: 5, totalTokens: 12 });
+  completed = false;
+  await assert.rejects(
+    askTutorAgent({ system: "test", input: "test" }),
+    (e: unknown) => e instanceof TutorServiceError && e.code === "incomplete",
+  );
+  completed = true;
+  output = { ...finalWire, message: "" };
+  await assert.rejects(
+    askTutorAgent({ system: "test", input: "test" }),
+    (e: unknown) => e instanceof TutorServiceError && e.code === "invalid_output",
+  );
+  for (const failure of [401, 403, 404, 429, 500]) {
+    status = failure;
+    const beforeCalls = calls;
+    await assert.rejects(askTutorAgent({ system: "test", input: "test" }), (e: unknown) => {
+      assert.equal((e as { status: number }).status, failure);
+      assert.equal(JSON.stringify(tutorFailure(e)).includes("test-only-key"), false);
+      return true;
+    });
+    assert.equal(calls, beforeCalls + 1, "SDK must not add retries outside the harness");
+  }
+});
+
+test("project SDK uses the project Responses endpoint and Entra audience and parses structured output", async (t) => {
+  const values = {
+    FOUNDRY_PROJECT_ENDPOINT: "https://project-sdk-test.services.ai.azure.com/api/projects/tutor",
+    FOUNDRY_OPENAI_ENDPOINT: "",
+    FOUNDRY_MODEL: "project-test-deployment",
+    FOUNDRY_CREDENTIAL: "default",
+    FOUNDRY_API_KEY: "unused-project-test-key",
+    FOUNDRY_MAX_OUTPUT_TOKENS: "4096",
+  };
+  const before = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, values);
+  t.after(() => {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const credential = t.mock.method(
+    DefaultAzureCredential.prototype,
+    "getToken",
+    async (scopes: string | string[]) => {
+      assert.deepEqual(Array.isArray(scopes) ? scopes : [scopes], [
+        "https://ai.azure.com/.default",
+      ]);
+      return { token: "synthetic-project-token", expiresOnTimestamp: Date.now() + 600_000 };
+    },
+  );
+  const transport = t.mock.method(
+    globalThis,
+    "fetch",
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      assert.equal(
+        request.url,
+        "https://project-sdk-test.services.ai.azure.com/api/projects/tutor/openai/v1/responses",
+      );
+      assert.equal(request.method, "POST");
+      assert.equal(request.headers.get("authorization"), "Bearer synthetic-project-token");
+      assert.equal(request.headers.has("api-key"), false);
+      const body = await request.json();
+      assert.equal(body.model, "project-test-deployment");
+      assert.equal(body.store, false);
+      assert.equal(body.max_output_tokens, 4096);
+      assert.equal(body.text.format.strict, true);
+      assert.deepEqual(body.text.format.schema, agentSchema);
+      return Response.json({
+        id: "project-response-test",
+        object: "response",
+        status: "completed",
+        output: [
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: JSON.stringify(finalWire), annotations: [] }],
+          },
+        ],
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+      });
+    },
+  );
+  let usage;
+  const result = await askTutorAgent({
+    system: "Synthetic project test",
+    input: "Synthetic input",
+    onUsage: (value) => {
+      usage = value;
+    },
+  });
+  assert.deepEqual(result, { ...final, relatedQuestionIds: [] });
+  assert.deepEqual(usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  assert.equal(credential.mock.callCount(), 1);
+  assert.equal(transport.mock.callCount(), 1);
+});
+
+test("tutor diagnostics distinguish actionable failures without exposing raw provider data", () => {
+  for (const [error, code] of [
+    [new TutorServiceError("configuration"), "configuration"],
+    [{ name: "AggregateAuthenticationError", message: "secret" }, "authentication"],
+    [{ status: 401, message: "secret" }, "authentication"],
+    [{ status: 403, message: "secret" }, "authentication"],
+    [{ status: 404, message: "secret" }, "deployment"],
+    [{ status: 400, message: "secret" }, "request"],
+    [{ status: 400, code: "content_filter", message: "secret" }, "content_filter"],
+    [{ status: 429, message: "secret" }, "rate_limit"],
+    [{ name: "TimeoutError", message: "secret" }, "timeout"],
+    [new Error("secret"), "unavailable"],
+  ] as const) {
+    assert.equal(tutorFailure(error).code, code);
+    assert.equal(JSON.stringify(tutorFailure(error)).includes("secret"), false);
+  }
 });
 
 test("strict schema recursively rejects open-ended objects and requires declared fields", () => {
@@ -139,6 +361,16 @@ test("model parser accepts scoped actions and rejects arbitrary tool arguments a
 });
 
 test("only transient failures qualify for harness retries", () => {
+  // Real SDK subclasses keep name="Error"; mocks with a custom name missed this.
+  for (const error of [
+    new OpenAI.APIConnectionError({}),
+    new OpenAI.APIConnectionTimeoutError({}),
+  ]) {
+    assert.equal(error.name, "Error");
+    assert.equal(isTransientFoundryError(error), true);
+  }
+  assert.equal(tutorFailure(new OpenAI.APIConnectionTimeoutError({})).code, "timeout");
+  assert.equal(isTransientFoundryError(new OpenAI.APIUserAbortError({})), false);
   for (const status of [408, 429, 500, 502, 503, 504])
     assert.equal(isTransientFoundryError({ status }), true);
   for (const status of [400, 401, 403, 404, 422])
