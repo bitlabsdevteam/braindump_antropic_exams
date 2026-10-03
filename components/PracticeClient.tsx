@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import PracticeResults from "./PracticeResults";
+import TutorResponse, { activityLabel, type TutorActivity, type TutorText } from "./TutorResponse";
+import { readTutorStream } from "../lib/read-tutor-stream";
+import type { TutorStreamReply } from "../lib/tutor-stream-types";
 import type { Answer, Question } from "../lib/types";
 import type {
   DraftState,
@@ -38,13 +41,6 @@ async function api<T>(
   if (!response.ok) throw new Error(data.error || "The request could not be completed.");
   return data as T;
 }
-type TutorReply = {
-  message: string;
-  concept: string;
-  nextStep: string;
-  runId: string;
-  state: DraftState;
-};
 type CoachProps = {
   question: Question;
   initial: DraftState;
@@ -73,7 +69,10 @@ function QuestionCoach({
   const [saving, setSaving] = useState(false);
   const [tutorBusy, setTutorBusy] = useState(false);
   const [tutorError, setTutorError] = useState("");
-  const [reply, setReply] = useState<TutorReply | null>(null);
+  const [reply, setReply] = useState<TutorStreamReply | null>(null);
+  const [partial, setPartial] = useState<TutorText>({});
+  const [activities, setActivities] = useState<TutorActivity[]>([]);
+  const [tutorStatus, setTutorStatus] = useState("");
   const [input, setInput] = useState("");
   const [related, setRelated] = useState<Recommendation[]>([]);
   const controller = useRef<AbortController | null>(null);
@@ -83,7 +82,6 @@ function QuestionCoach({
   const pendingSaves = useRef(0);
   const failedSave = useRef(false);
   const submission = useRef<string | null>(null);
-  const tutorPanel = useRef<HTMLDivElement>(null);
   const setServerState = useCallback((next: DraftState) => {
     stateRef.current = next;
     setState(next);
@@ -93,6 +91,9 @@ function QuestionCoach({
     controller.current?.abort();
     setTutorBusy(false);
     setReply(null);
+    setPartial({});
+    setActivities([]);
+    setTutorStatus("");
     setTutorError("");
   }, []);
 
@@ -129,9 +130,6 @@ function QuestionCoach({
       controller.current?.abort();
     };
   }, [question.id, certification, setServerState]);
-  useEffect(() => {
-    if (reply) tutorPanel.current?.focus();
-  }, [reply]);
 
   function save(nextSelected: string[], nextReasoning: string) {
     cancelTutor();
@@ -236,33 +234,88 @@ function QuestionCoach({
     if (tutorBusy) return;
     setTutorBusy(true);
     setTutorError("");
+    setReply(null);
+    setPartial({});
+    setActivities([]);
+    setTutorStatus("Connecting to your tutor…");
     const version = ++epoch.current;
     controller.current?.abort();
-    controller.current = new AbortController();
+    const requestController = new AbortController();
+    controller.current = requestController;
+    const current = () => alive.current && version === epoch.current;
+    let receiving = false;
     try {
       await queue.current;
+      if (!current()) return;
       if (failedSave.current) throw new Error("Reload progress before asking the tutor.");
-      const data = await api<TutorReply>(
-        "/api/tutor",
-        {
+      const response = await fetch("/api/tutor", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        signal: requestController.signal,
+        body: JSON.stringify({
           questionId: question.id,
           requestId: crypto.randomUUID(),
           intent,
           message,
           revision: stateRef.current.revision,
+        }),
+      });
+      await readTutorStream(
+        response,
+        (event) => {
+          if (!current()) return;
+          switch (event.type) {
+            case "start":
+              setTutorStatus("Connected to your tutor.");
+              break;
+            case "activity":
+              setActivities((previous) => [
+                ...previous.filter((item) => item.id !== event.id),
+                event,
+              ]);
+              setTutorStatus(activityLabel(event));
+              break;
+            case "delta":
+              if (!receiving) {
+                receiving = true;
+                setTutorStatus("Receiving the tutor’s response…");
+              }
+              setPartial((previous) => ({
+                ...previous,
+                [event.field]: (previous[event.field] ?? "") + event.text,
+              }));
+              break;
+            case "reset":
+              receiving = false;
+              setReply(null);
+              setPartial({});
+              setActivities([]);
+              setTutorStatus("The connection was interrupted. Retrying…");
+              break;
+            case "complete":
+              setReply(event.reply);
+              setPartial({});
+              setServerState(event.reply.state);
+              setInput("");
+              setTutorStatus("Tutor response complete.");
+              break;
+            case "error":
+              throw new Error(event.error);
+          }
         },
-        "POST",
-        controller.current.signal,
+        requestController.signal,
       );
-      if (!alive.current || version !== epoch.current) return;
-      setReply(data);
-      setServerState(data.state);
-      setInput("");
     } catch (cause) {
-      if (alive.current && version === epoch.current && (cause as Error).name !== "AbortError")
-        setTutorError((cause as Error).message);
+      if (current()) {
+        setReply(null);
+        setPartial({});
+        setActivities([]);
+        setTutorStatus("");
+        if ((cause as Error).name !== "AbortError") setTutorError((cause as Error).message);
+      }
     } finally {
-      if (alive.current && version === epoch.current) setTutorBusy(false);
+      if (current()) setTutorBusy(false);
     }
   }
   const required =
@@ -519,29 +572,29 @@ function QuestionCoach({
               </button>
             )}
           </div>
-          {tutorBusy && (
-            <p className="tutor-state" role="status">
-              Thinking through the concept…
+          <div className="tutor-stream-status">
+            <p className="tutor-state" role="status" aria-live="polite" aria-atomic="true">
+              {tutorStatus}
             </p>
-          )}
+            {tutorBusy && (
+              <button
+                className="button secondary"
+                onClick={() => {
+                  cancelTutor();
+                  setTutorStatus("Response stopped. You can ask again.");
+                }}
+              >
+                Stop response
+              </button>
+            )}
+          </div>
           {tutorError && (
             <p className="tutor-error" role="alert">
               {tutorError}
             </p>
           )}
-          {reply && (
-            <div className="tutor-panel" ref={tutorPanel} tabIndex={-1} aria-label="AI commentary">
-              <p className="eyebrow">AI commentary</p>
-              <p className="tutor-message">{reply.message}</p>
-              <div className="tutor-detail">
-                <strong>Concept</strong>
-                <p>{reply.concept}</p>
-              </div>
-              <div className="tutor-detail">
-                <strong>Next step</strong>
-                <p>{reply.nextStep}</p>
-              </div>
-            </div>
+          {(reply || Object.keys(partial).length > 0 || activities.length > 0) && (
+            <TutorResponse text={reply ?? partial} activities={activities} streaming={tutorBusy} />
           )}
           <form
             className="tutor-form"

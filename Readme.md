@@ -93,3 +93,5 @@ Live evaluation incurs Foundry usage and requires valid configuration and Azure 
 Answer keys and rationales are absent from initial HTML, serialized question props, progress responses, and hidden tutor context. Tools enforce reveal permissions. Revisions invalidate responses after hide, retry, navigation, or reset. Withholding private answer keys cannot prevent a model from independently inferring an answer, so adversarial live evaluation remains necessary.
 
 Authentication, cross-device progress, generated exam questions, full lessons, and scheduled study planning remain future work.
+
+The tutor streams text directly from Foundry as it arrives, with a short **Tutor approach** summary and actual tool activity. **Stop** cancels an in-flight response. Partial responses are cleared on failure, cancellation, or question changes; only validated completed exchanges enter conversation history. Receiving even a partial hint counts as assistance. Provider reasoning and raw tool payloads are never sent to the browser. Clients request streaming with `Accept: text/event-stream`; ordinary JSON callers remain supported.

@@ -10,6 +10,9 @@ export function learnerSession(request: Request) {
 }
 export function jsonResponse(data: unknown, id: string, status = 200) {
   const response = NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
+  return withLearnerCookie(response, id);
+}
+export function withLearnerCookie(response: NextResponse, id: string) {
   const expiresAt = sessionExpires(id);
   // A cancelled old request must not clear/replace the fresh cookie issued by reset.
   if (expiresAt > Date.now())

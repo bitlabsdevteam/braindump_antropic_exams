@@ -5,12 +5,18 @@ import {
   getBearerTokenProvider,
 } from "@azure/identity";
 import OpenAI from "openai";
-import { TutorServiceError } from "./tutor-errors";
+import { TutorServiceError, tutorFailure } from "./tutor-errors";
+import { StreamedTutorJson, type TutorTextDelta } from "./streamed-tutor-json";
+export type { TutorTextDelta } from "./streamed-tutor-json";
 
 export type TutorModelInput = { system: string; input: string };
 export type TutorModelOutput = { message: string; concept: string; nextStep: string };
 export type FoundryUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
-type ModelOptions = { signal?: AbortSignal; onUsage?: (usage: FoundryUsage) => void };
+export type ModelOptions = {
+  signal?: AbortSignal;
+  onUsage?: (usage: FoundryUsage) => void;
+  onDelta?: (delta: TutorTextDelta) => void;
+};
 const toolNames = [
   "get_question_context",
   "find_related_questions",
@@ -19,7 +25,7 @@ const toolNames = [
 ] as const;
 export type AgentModelOutput =
   | { type: "tool"; tool: (typeof toolNames)[number]; arguments: Record<string, unknown> }
-  | ({ type: "final"; relatedQuestionIds?: number[] } & TutorModelOutput);
+  | ({ type: "final"; approach?: string; relatedQuestionIds?: number[] } & TutorModelOutput);
 
 const tutorSchema = {
   type: "object",
@@ -49,12 +55,26 @@ export const agentSchema = {
       },
       required: ["limit", "domainNumber"],
     },
+    approach: {
+      type: ["string", "null"],
+      description:
+        "A brief student-facing teaching approach: the concept or decision criteria to consider. Never provide hidden chain-of-thought, private deliberation, or unrevealed answers. Null for tools.",
+    },
     message: { type: ["string", "null"] },
     concept: { type: ["string", "null"] },
     nextStep: { type: ["string", "null"] },
     relatedQuestionIds: { type: ["array", "null"], items: { type: "integer" } },
   },
-  required: ["type", "tool", "arguments", "message", "concept", "nextStep", "relatedQuestionIds"],
+  required: [
+    "type",
+    "tool",
+    "arguments",
+    "approach",
+    "message",
+    "concept",
+    "nextStep",
+    "relatedQuestionIds",
+  ],
 };
 
 let client: OpenAI | undefined;
@@ -197,6 +217,7 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
           "type",
           "tool",
           "arguments",
+          "approach",
           "message",
           "concept",
           "nextStep",
@@ -209,6 +230,7 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
     if (!toolNames.includes(value.tool as (typeof toolNames)[number]) || !object(value.arguments))
       throw invalid();
     if (
+      value.approach !== null ||
       value.message !== null ||
       value.concept !== null ||
       value.nextStep !== null ||
@@ -246,6 +268,7 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
     };
   }
   if (value.type !== "final" || value.tool !== null || value.arguments !== null) throw invalid();
+  if (!validText(value.approach) || value.approach.length > 1000) throw invalid();
   const ids = value.relatedQuestionIds;
   if (
     ids !== null &&
@@ -254,28 +277,105 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
     throw invalid();
   return {
     type: "final",
+    approach: value.approach,
     ...parseTutorOutput(value),
     relatedQuestionIds: Array.isArray(ids) ? [...new Set(ids as number[])] : undefined,
   };
 }
 
 async function generate(
-  { system, input, signal, onUsage }: TutorModelInput & ModelOptions,
+  { system, input, signal, onUsage, onDelta }: TutorModelInput & ModelOptions,
   schema: Record<string, unknown>,
   name: string,
 ): Promise<unknown> {
   const { client: openai, model, maxOutputTokens } = getClient();
-  const response = await openai.responses.create(
-    {
-      model,
-      instructions: system,
-      input,
-      store: false,
-      max_output_tokens: maxOutputTokens,
-      text: { format: { type: "json_schema", name, schema, strict: true } },
-    },
-    { signal },
-  );
+  const body = {
+    model,
+    instructions: system,
+    input,
+    store: false,
+    max_output_tokens: maxOutputTokens,
+    text: { format: { type: "json_schema" as const, name, schema, strict: true } },
+  };
+  if (onDelta && schema === agentSchema) {
+    if (signal?.aborted) throw new TutorServiceError("timeout");
+    const stream = await openai.responses
+      .create({ ...body, stream: true }, { signal })
+      .catch((error: unknown) => {
+        if (signal?.aborted) throw new TutorServiceError("timeout");
+        throw error;
+      });
+    const extractor = new StreamedTutorJson((delta) => {
+      if (signal?.aborted) throw new TutorServiceError("timeout");
+      onDelta(delta);
+    });
+    let raw = "";
+    let textItem: string | undefined;
+    let completed = false;
+    let refused = false;
+    try {
+      for await (const event of stream) {
+        if (signal?.aborted) throw new TutorServiceError("timeout");
+        if (event.type === "response.output_text.delta") {
+          const item = `${event.output_index}:${event.item_id}:${event.content_index}`;
+          if (textItem !== undefined && textItem !== item)
+            throw new TutorServiceError("invalid_output");
+          textItem = item;
+          extractor.push(event.delta);
+          raw += event.delta;
+        } else if (
+          event.type === "response.refusal.delta" ||
+          event.type === "response.refusal.done"
+        ) {
+          refused = true;
+        } else if (event.type === "error") {
+          throw new TutorServiceError(tutorFailure(event).code);
+        } else if (
+          event.type === "response.failed" ||
+          event.type === "response.incomplete" ||
+          event.type === "response.completed"
+        ) {
+          const response = event.response;
+          if (response.usage)
+            onUsage?.({
+              inputTokens: response.usage.input_tokens,
+              outputTokens: response.usage.output_tokens,
+              totalTokens: response.usage.total_tokens,
+            });
+          if (refused || response.incomplete_details?.reason === "content_filter")
+            throw new TutorServiceError("content_filter");
+          if (event.type === "response.failed")
+            throw new TutorServiceError(tutorFailure(response.error).code);
+          if (event.type !== "response.completed" || response.status !== "completed")
+            throw new TutorServiceError("incomplete");
+          const finalText = response.output
+            .flatMap((item) =>
+              item.type === "message"
+                ? item.content
+                    .filter((content) => content.type === "output_text")
+                    .map((content) => content.text)
+                : [],
+            )
+            .join("");
+          if (finalText !== raw) throw new TutorServiceError("invalid_output");
+          const parsed = extractor.finish();
+          // Validate before declaring stream success; callers must discard provisional text on failure.
+          parseAgentModelOutput(parsed);
+          completed = true;
+          return parsed;
+        }
+        // Provider reasoning, tool-call and other internal events are intentionally ignored.
+      }
+      throw new TutorServiceError("incomplete");
+    } catch (error) {
+      if (signal?.aborted) throw new TutorServiceError("timeout");
+      if (error instanceof SyntaxError) throw new TutorServiceError("invalid_output");
+      throw error;
+    } finally {
+      if (!completed) stream.controller.abort();
+    }
+  }
+  const response = await openai.responses.create(body, { signal });
   if (response.usage)
     onUsage?.({
       inputTokens: response.usage.input_tokens,

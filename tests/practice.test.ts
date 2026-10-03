@@ -850,3 +850,134 @@ test("final practice marks include assisted and previously revealed first submis
   assert.equal(result.independent, 0);
   assert.equal(result.percentage, 3);
 });
+
+test("partial streamed hints count as assistance but cancellation saves no transcript", async () => {
+  const { request, context } = runFixture();
+  const controller = new AbortController();
+  const events: import("../lib/tutor-stream-types").TutorRuntimeEvent[] = [];
+  await assert.rejects(
+    runtime.runTutorAgent({ ...request, signal: controller.signal }, context, {
+      onEvent: (event) => events.push(event),
+      model: async ({ onDelta }) => {
+        onDelta?.({ field: "message", text: "Compare the constraints." });
+        assert.equal(sessions.history(request.sessionId, single.id).length, 0);
+        assert.equal(practice.getState(request.sessionId, single.id).hintCount, 0);
+        controller.abort();
+        return final;
+      },
+    }),
+    /too long/,
+  );
+  assert.ok(events.some((event) => event.type === "delta"));
+  assert.equal(sessions.history(request.sessionId, single.id).length, 0);
+  const state = saveCorrect(request.sessionId);
+  const submitted = practice.submitAttempt(
+    request.sessionId,
+    single.id,
+    "partial-hint-attempt",
+    state.revision,
+  );
+  assert.equal(submitted.state.result?.kind, "assisted");
+  sessions.finishRun(request.sessionId, request.requestId);
+});
+
+test("stream rejects deltas after hide and resets partial output before retry", async () => {
+  const stale = runFixture();
+  const staleEvents: import("../lib/tutor-stream-types").TutorRuntimeEvent[] = [];
+  await assert.rejects(
+    runtime.runTutorAgent(stale.request, stale.context, {
+      onEvent: (event) => staleEvents.push(event),
+      model: async ({ onDelta }) => {
+        sessions.hide(stale.request.sessionId, single.id);
+        onDelta?.({ field: "message", text: "Stale content" });
+        return final;
+      },
+    }),
+    /changed/,
+  );
+  assert.ok(!staleEvents.some((event) => event.type === "delta"));
+  sessions.finishRun(stale.request.sessionId, stale.request.requestId);
+  const retry = runFixture();
+  const events: import("../lib/tutor-stream-types").TutorRuntimeEvent[] = [];
+  let calls = 0;
+  await runtime.runTutorAgent(retry.request, retry.context, {
+    onEvent: (event) => events.push(event),
+    model: async ({ onDelta }) => {
+      calls += 1;
+      onDelta?.({ field: "message", text: calls === 1 ? "Partial" : final.message });
+      if (calls === 1) throw Object.assign(new Error("transient"), { status: 503 });
+      return final;
+    },
+  });
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === "delta" || event.type === "reset")
+      .map((event) => event.type),
+    ["delta", "reset", "delta"],
+  );
+  assert.equal(sessions.history(retry.request.sessionId, single.id).length, 2);
+  assert.equal(practice.getState(retry.request.sessionId, single.id).hintCount, 1);
+  sessions.finishRun(retry.request.sessionId, retry.request.requestId);
+});
+
+test("server SSE sends deltas before completion and releases cancelled requests once", async () => {
+  const { tutorEventResponse } = await import("../lib/server-tutor-stream");
+  const id = fresh();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let finishCount = 0;
+  let executionSignal: AbortSignal | undefined;
+  const response = tutorEventResponse({
+    sessionId: id,
+    requestId: "stream-test",
+    signal: new AbortController().signal,
+    onFinish: () => {
+      finishCount += 1;
+    },
+    execute: async (signal, emit) => {
+      executionSignal = signal;
+      emit({ type: "delta", field: "message", text: "First chunk" });
+      await gate;
+      return {
+        ...final,
+        relatedQuestions: [],
+        runId: "stream-test",
+        state: practice.getState(id, single.id),
+      };
+    },
+  });
+  assert.match(response.headers.get("content-type")!, /text\/event-stream/);
+  assert.match(response.headers.get("set-cookie")!, /HttpOnly/i);
+  const reader = response.body!.getReader();
+  const chunk = await reader.read();
+  assert.match(new TextDecoder().decode(chunk.value), /First chunk/);
+  assert.equal(finishCount, 0);
+  await reader.cancel();
+  assert.equal(executionSignal?.aborted, true);
+  assert.equal(finishCount, 1);
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finishCount, 1);
+});
+
+test("server SSE reports safe terminal errors without provider details", async () => {
+  const { tutorEventResponse } = await import("../lib/server-tutor-stream");
+  let finished = false;
+  const response = tutorEventResponse({
+    sessionId: fresh(),
+    requestId: "error-stream-test",
+    signal: new AbortController().signal,
+    onFinish: () => {
+      finished = true;
+    },
+    execute: async () => {
+      throw new Error("private provider payload");
+    },
+  });
+  const text = await response.text();
+  assert.match(text, /"type":"error"/);
+  assert.ok(!text.includes("private provider payload"));
+  assert.equal(finished, true);
+});

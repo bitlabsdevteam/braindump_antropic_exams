@@ -142,13 +142,14 @@ test("keyboard controls work and hiding discards a late tutor response", async (
     await gate;
     try {
       await route.fulfill({
-        json: {
-          message: "STALE ANSWER SHOULD NOT APPEAR",
-          concept: "Stale concept",
-          nextStep: "Stale next step",
-          runId: "mock-run",
-          state: {},
-        },
+        contentType: "text/event-stream",
+        body: [
+          { type: "start", runId: "mock-run", answerRevealed: true },
+          { type: "delta", field: "message", text: "STALE ANSWER SHOULD NOT APPEAR" },
+          { type: "error", error: "Stale request", code: "stale" },
+        ]
+          .map((event) => "data: " + JSON.stringify(event) + "\n\n")
+          .join(""),
       });
     } finally {
       completed();

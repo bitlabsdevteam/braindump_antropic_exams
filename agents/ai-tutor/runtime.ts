@@ -5,6 +5,7 @@ import { addMessage, history, runActive, sessionDatabase } from "./context/sessi
 import { PracticeError, recordAssistance, revisionMatches } from "../../lib/practice";
 import { startTrace, finishTrace, traceEvent } from "./harness/trace";
 import { runTool, ToolPermissionError } from "./tools";
+import type { TutorRuntimeEvent } from "../../lib/tutor-stream-types";
 import type {
   AgentContext,
   AgentRequest,
@@ -53,7 +54,12 @@ function inputFor(context: AgentContext, message: string, toolResults: ToolResul
   );
 }
 function validateFinal(value: FinalAnswer): FinalAnswer {
-  for (const field of [value.message, value.concept, value.nextStep])
+  for (const field of [
+    value.message,
+    value.concept,
+    value.nextStep,
+    ...(value.approach === undefined ? [] : [value.approach]),
+  ])
     if (!field.trim() || field.length > 8000)
       throw new Error("The tutor produced an invalid response");
   return value;
@@ -75,7 +81,11 @@ function completedConversation(messages: TutorMessage[]): TutorMessage[] {
 export async function runTutorAgent(
   request: AgentRequest,
   context: AgentContext,
-  dependencies: { model?: typeof askTutorAgent; timeoutMs?: number } = {},
+  dependencies: {
+    model?: typeof askTutorAgent;
+    timeoutMs?: number;
+    onEvent?: (event: TutorRuntimeEvent) => void;
+  } = {},
 ): Promise<TutorReply> {
   const prompt = getTutorPrompt();
   const trace = startTrace(prompt.hash);
@@ -94,6 +104,11 @@ export async function runTutorAgent(
       throw new PracticeError("The question or conversation changed. Please ask again.", 409);
   };
   const tools: ToolResult[] = [];
+  const emit = (event: TutorRuntimeEvent) => {
+    assertCurrent();
+    dependencies.onEvent?.(event);
+  };
+  let streamedAssistance = false;
   const seen = new Set<string>();
   let calls = 0;
   let toolCalls = 0;
@@ -103,10 +118,13 @@ export async function runTutorAgent(
     // Legacy failed requests may have persisted a user-only turn. Pruned history
     // can also begin with an orphan assistant. Neither belongs in model context.
     context.history = completedConversation(history(request.sessionId, request.questionId));
+    emit({ type: "start", runId: trace.runId, answerRevealed: context.state.answerRevealed });
+    emit({ type: "activity", id: "question", stage: "question", state: "done" });
     while (calls < maxCalls) {
       assertCurrent();
       calls += 1;
       traceEvent(trace, "model_call", { count: calls });
+      emit({ type: "activity", id: `model-${calls}`, stage: "model", state: "active" });
       let decision;
       try {
         // Race the deadline as identity token acquisition may not honor fetch cancellation.
@@ -126,6 +144,24 @@ export async function runTutorAgent(
               input: inputFor(context, request.message, tools),
               signal: controller.signal,
               onUsage: (usage) => traceEvent(trace, "usage", usage),
+              onDelta: dependencies.onEvent
+                ? ({ field, text }) => {
+                    assertCurrent();
+                    if (
+                      !["approach", "message", "concept", "nextStep"].includes(field) ||
+                      typeof text !== "string"
+                    )
+                      throw new TutorServiceError("invalid_output");
+                    if (!text) return;
+                    // Even a cancelled partial hint has helped the learner. Record exposure to
+                    // AI assistance now; increment hint stage and save transcript only on success.
+                    if (!streamedAssistance && !context.state.answerRevealed && text.trim()) {
+                      recordAssistance(request.sessionId, request.questionId, false);
+                      streamedAssistance = true;
+                    }
+                    emit({ type: "delta", field, text });
+                  }
+                : undefined,
             })
               .then(resolve, reject)
               .finally(() => controller.signal.removeEventListener("abort", stopped));
@@ -140,11 +176,13 @@ export async function runTutorAgent(
         ) {
           retried = true;
           traceEvent(trace, "retry", { reason: "transient_provider_error" });
+          emit({ type: "reset", reason: "retry" });
           continue;
         }
         throw error;
       }
       assertCurrent();
+      emit({ type: "activity", id: `model-${calls}`, stage: "model", state: "done" });
       if (decision.type === "final") {
         const final = validateFinal(decision);
         const known = new Map<number, RelatedQuestion>();
@@ -158,6 +196,7 @@ export async function runTutorAgent(
           .filter((item): item is RelatedQuestion => Boolean(item))
           .slice(0, 5);
         const reply = {
+          ...(final.approach === undefined ? {} : { approach: final.approach }),
           message: final.message,
           concept: final.concept,
           nextStep: final.nextStep,
@@ -176,6 +215,7 @@ export async function runTutorAgent(
             addMessage(request.sessionId, request.questionId, {
               role: "assistant",
               content: JSON.stringify({
+                ...(final.approach === undefined ? {} : { approach: final.approach }),
                 message: final.message,
                 concept: final.concept,
                 nextStep: final.nextStep,
@@ -207,6 +247,8 @@ export async function runTutorAgent(
         throw new Error("The tutor repeated a tool request. Please try again.");
       seen.add(fingerprint);
       toolCalls += 1;
+      emit({ type: "activity", id: `tool-${toolCalls}`, stage: decision.tool, state: "active" });
+      let toolState: "done" | "denied" = "done";
       try {
         const result = runTool(decision.tool, decision.arguments, {
           sessionId: request.sessionId,
@@ -215,6 +257,7 @@ export async function runTutorAgent(
         tools.push({ tool: decision.tool, result });
         traceEvent(trace, "tool", { name: decision.tool, allowed: true });
       } catch (error) {
+        toolState = "denied";
         tools.push({
           tool: decision.tool,
           result: {
@@ -223,6 +266,7 @@ export async function runTutorAgent(
         });
         traceEvent(trace, "tool", { name: decision.tool, allowed: false });
       }
+      emit({ type: "activity", id: `tool-${toolCalls}`, stage: decision.tool, state: toolState });
     }
     throw new Error("The tutor reached its response limit. Please try again.");
   } catch (error) {

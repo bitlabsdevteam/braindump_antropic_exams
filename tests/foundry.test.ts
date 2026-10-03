@@ -17,6 +17,7 @@ const finalWire = {
   type: "final",
   tool: null,
   arguments: null,
+  approach: "Identify the requirement and compare the stated constraints.",
   message: "Read the requirement.",
   concept: "Data freshness",
   nextStep: "Identify the constraint.",
@@ -26,6 +27,7 @@ const toolWire = {
   type: "tool",
   tool: "get_question_context",
   arguments: { limit: null, domainNumber: null },
+  approach: null,
   message: null,
   concept: null,
   nextStep: null,
@@ -33,6 +35,7 @@ const toolWire = {
 };
 const final: AgentModelOutput = {
   type: "final",
+  approach: "Identify the requirement and compare the stated constraints.",
   message: "Read the requirement.",
   concept: "Data freshness",
   nextStep: "Identify the constraint.",
@@ -352,6 +355,9 @@ test("model parser accepts scoped actions and rejects arbitrary tool arguments a
     { ...finalWire, tool: "get_question_context" },
     { ...finalWire, extra: true },
     { ...finalWire, message: " " },
+    { ...finalWire, approach: null },
+    { ...finalWire, approach: " " },
+    { ...finalWire, approach: "x".repeat(1001) },
     { ...finalWire, message: "x".repeat(8001) },
     { ...finalWire, relatedQuestionIds: [0] },
     { ...finalWire, relatedQuestionIds: [1.5] },

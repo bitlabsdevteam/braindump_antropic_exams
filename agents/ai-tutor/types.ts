@@ -3,6 +3,7 @@ import type { TutorIntent } from "../../lib/practice-types";
 
 export type TutorMessage = { role: "user" | "assistant"; content: string };
 export type TutorReply = {
+  approach?: string;
   message: string;
   concept: string;
   nextStep: string;
@@ -48,6 +49,7 @@ export type ToolName =
 export type ToolCall = { type: "tool"; tool: ToolName; arguments: Record<string, unknown> };
 export type FinalAnswer = {
   type: "final";
+  approach?: string;
   message: string;
   concept: string;
   nextStep: string;

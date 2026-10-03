@@ -16,11 +16,14 @@ import {
 import { getState, PracticeError, questionContext } from "../../../lib/practice";
 import type { TutorIntent } from "../../../lib/practice-types";
 import { tutorFailure } from "../../../lib/tutor-errors";
+import { foundryConfiguration } from "../../../lib/foundry";
+import { tutorEventResponse } from "../../../lib/server-tutor-stream";
 
 export const runtime = "nodejs";
 export async function POST(request: Request) {
   const sessionId = learnerSession(request);
   let acquired = false;
+  let streaming = false;
   let requestId = "";
   try {
     const body = await readBody(request);
@@ -65,6 +68,38 @@ export async function POST(request: Request) {
       intent: intent as TutorIntent,
       revision: state.revision,
     });
+    if (
+      request.headers
+        .get("accept")
+        ?.split(",")
+        .some((type) => type.trim().split(";")[0] === "text/event-stream")
+    ) {
+      // Configuration errors retain an ordinary HTTP error before streaming headers commit.
+      foundryConfiguration();
+      const response = tutorEventResponse({
+        sessionId,
+        requestId,
+        signal: request.signal,
+        execute: async (signal, onEvent) => {
+          const tutor = await runTutorAgent(
+            {
+              sessionId,
+              questionId: questionId as number,
+              message: message.trim(),
+              requestId,
+              learnerState: context.state,
+              signal,
+            },
+            context,
+            { onEvent },
+          );
+          return { ...tutor, state: getState(sessionId, questionId as number) };
+        },
+        onFinish: () => finishRun(sessionId, requestId),
+      });
+      streaming = true;
+      return response;
+    }
     const tutor = await runTutorAgent(
       {
         sessionId,
@@ -95,7 +130,7 @@ export async function POST(request: Request) {
       failure.code === "content_filter" ? 422 : 503,
     );
   } finally {
-    if (acquired) finishRun(sessionId, requestId);
+    if (acquired && !streaming) finishRun(sessionId, requestId);
   }
 }
 export async function DELETE(request: Request) {

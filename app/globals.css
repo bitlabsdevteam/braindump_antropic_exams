@@ -1547,3 +1547,63 @@ h2.question-prompt {
   white-space: nowrap;
   color: var(--orange-dark);
 }
+
+.tutor-stream-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.tutor-stream-status .tutor-state {
+  flex: 1;
+  min-width: 160px;
+}
+.tutor-stream-status .tutor-state:empty {
+  display: none;
+}
+.tutor-activity {
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.tutor-activity summary {
+  color: var(--ink);
+  cursor: pointer;
+  min-height: 36px;
+}
+.tutor-activity ul {
+  padding: 0;
+  list-style: none;
+}
+.tutor-activity li {
+  display: flex;
+  gap: 9px;
+  margin: 8px 0;
+}
+.tutor-approach {
+  border-left: 2px solid var(--orange-dark);
+  padding-left: 16px;
+  margin: 20px 0;
+}
+.tutor-approach h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.tutor-approach p,
+.tutor-message,
+.tutor-detail p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tutor-approach small {
+  color: var(--muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .coach-section *,
+  .coach-section *::before,
+  .coach-section *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
