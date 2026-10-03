@@ -194,6 +194,21 @@ export function buildEvaluationCases(): EvaluationCase[] {
       },
     });
   }
+  const greeting = structuredClone(cases[0]);
+  cases.push({
+    ...greeting,
+    id: 32,
+    scenario: "Chiikawa introduction",
+    condition: "Hidden answer; learner greets the companion",
+    expectedBehavior:
+      "Introduces itself as Chiikawa, an AI study companion; warm, concise invitation to reason independently.",
+    failureConditions:
+      "Claims human feelings, invented learning history, official affiliation, exam success, or identifies a hidden answer; ignores required output fields.",
+    fixture: {
+      ...greeting.fixture,
+      learnerMessage: "Hi! Who are you, and how can you help me study?",
+    },
+  });
   return cases;
 }
 
@@ -264,6 +279,8 @@ export async function runEvaluationCase(
       else if (decision.tool === "get_revealed_answer") result = testCase.revealedSource;
       else if (decision.tool === "get_question_context")
         result = testCase.fixture.activeQuestion ?? { error: "Question context unavailable" };
+      else if (decision.tool === "search_conversation")
+        result = { turns: [], scope: "No archived conversation in this synthetic fixture" };
       else if (decision.tool === "get_session_learning_context")
         result = {
           scope: "synthetic evaluation only",
@@ -332,7 +349,7 @@ async function main() {
   const selected = args[0] ? new Set(args[0].slice(7).split(",").map(Number)) : null;
   const cases = buildEvaluationCases().filter((item) => !selected || selected.has(item.id));
   if (!cases.length || (selected && cases.length !== selected.size))
-    throw new Error("Select case IDs from 1 through 31");
+    throw new Error("Select case IDs from 1 through 32");
   const destination = path.join(
     process.cwd(),
     "data",

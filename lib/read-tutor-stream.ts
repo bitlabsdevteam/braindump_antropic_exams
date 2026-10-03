@@ -3,13 +3,17 @@ import type { TutorStreamEvent } from "./tutor-stream-types";
 const stages = new Set([
   "question",
   "model",
+  "memory",
+  "compaction",
   "get_question_context",
   "find_related_questions",
   "get_revealed_answer",
   "get_session_learning_context",
+  "search_conversation",
 ]);
 const fields = new Set(["approach", "message", "concept", "nextStep"]);
-const invalid = () => new Error("The tutor response was interrupted or invalid. Please try again.");
+const invalid = () =>
+  new Error("Chiikawa’s response was interrupted or invalid. Please try again.");
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const shortText = (value: unknown, limit = 8000): value is string =>
@@ -96,7 +100,7 @@ export async function readTutorStream(
     throw new Error(
       record(body) && shortText(body.error, 1000)
         ? body.error
-        : "The tutor request could not be completed.",
+        : "The request to Chiikawa could not be completed.",
     );
   }
   if (

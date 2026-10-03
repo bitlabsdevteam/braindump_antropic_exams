@@ -17,6 +17,7 @@ import { getState, PracticeError, questionContext } from "../../../lib/practice"
 import type { TutorIntent } from "../../../lib/practice-types";
 import { tutorFailure } from "../../../lib/tutor-errors";
 import { foundryConfiguration } from "../../../lib/foundry";
+import { getTutorPrompt } from "../../../agents/ai-tutor/context/prompt";
 import { tutorEventResponse } from "../../../lib/server-tutor-stream";
 
 export const runtime = "nodejs";
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
     requestId = body.requestId;
     if (questionContext(questionId as number).question.reviewRequired)
       throw new PracticeError(
-        "This question needs source review before AI coaching is available.",
+        "This question needs source review before Chiikawa is available.",
         409,
       );
     const state = getState(sessionId, questionId as number);
@@ -53,11 +54,14 @@ export async function POST(request: Request) {
     if (intent === "review" && !state.visible)
       throw new PracticeError("Reveal the source answer before requesting a review.", 403);
     if (runsInLastMinute(sessionId) >= 10)
-      throw new PracticeError("Please wait a minute before sending another tutor request.", 429);
+      throw new PracticeError(
+        "Please wait a minute before sending another request to Chiikawa.",
+        429,
+      );
     acquired = beginRun(sessionId, requestId);
     if (!acquired)
       throw new PracticeError(
-        "A tutor response is already in progress, or this request was already used.",
+        "A Chiikawa response is already in progress, or this request was already used.",
         429,
       );
     const context = createContext(questionId as number, {
@@ -68,6 +72,7 @@ export async function POST(request: Request) {
       intent: intent as TutorIntent,
       revision: state.revision,
     });
+    getTutorPrompt();
     if (
       request.headers
         .get("accept")

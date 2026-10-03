@@ -20,21 +20,6 @@ export default async function PracticePage({ params }: { params: Promise<{ slug:
         </span>
       </header>
       <div className="practice-main">
-        <aside className="rail" aria-label="Exam domains">
-          <div className="rail-label">Exam index</div>
-          <div className="rail-list">
-            {domains.map((domain) => (
-              <a
-                className="rail-link"
-                href={`/exams/${slug}/practice?question=${encodeURIComponent(questions.find((q) => q.domainNumber === domain.number)?.sourceKey ?? "")}`}
-                key={domain.number}
-              >
-                <span className="rail-number">{String(domain.number).padStart(2, "0")}</span>
-                <span>{domain.name}</span>
-              </a>
-            ))}
-          </div>
-        </aside>
         <section>
           <div className="practice-heading">
             <div>
@@ -55,6 +40,7 @@ export default async function PracticePage({ params }: { params: Promise<{ slug:
           <PracticeClient
             certification={slug}
             questions={questions}
+            domains={domains}
             timeLimitMinutes={certification.timeLimitMinutes}
           />
         </section>

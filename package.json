@@ -16,9 +16,10 @@
     "tutor:check": "node --env-file-if-exists=.env.local --import tsx scripts/check-foundry.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
+    "tutor:memory:live": "node --env-file-if-exists=.env.local --import tsx agents/ai-tutor/harness/memory-live.ts",
     "tutor:eval:live": "node --env-file-if-exists=.env.local --import tsx agents/ai-tutor/harness/live.ts",
-    "format": "prettier --write app components lib agents scripts tests prompts docs Readme.md playwright.config.ts package.json",
-    "format:check": "prettier --check app components lib agents scripts tests prompts docs Readme.md playwright.config.ts package.json"
+    "format": "prettier --write app components lib agents scripts tests prompts docs Readme.md SOUL.MD next.config.ts playwright.config.ts package.json",
+    "format:check": "prettier --check app components lib agents scripts tests prompts docs Readme.md SOUL.MD next.config.ts playwright.config.ts package.json"
   },
   "dependencies": {
     "@azure/ai-projects": "^2.7.1",

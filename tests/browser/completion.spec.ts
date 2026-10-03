@@ -8,6 +8,7 @@ test("the last question offers completion instead of a disabled Next button", as
     page.getByRole("button", { name: "Finish and view results", exact: true }),
   ).toBeEnabled();
   await page.getByRole("button", { name: "Finish and view results", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "Chiikawa", exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Your practice result", exact: true }),
   ).toBeVisible();
@@ -127,6 +128,7 @@ for (const [slug, total] of [
     await page.getByRole("button", { name: "Submit and reveal", exact: true }).click();
     await expect(page.getByRole("region", { name: "Source answer", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Finish and view results", exact: true }).click();
+    await expect(page.getByRole("complementary", { name: "Chiikawa", exact: true })).toHaveCount(0);
     await expect(
       page.getByRole("heading", { name: "Your practice result", exact: true }),
     ).toBeVisible();

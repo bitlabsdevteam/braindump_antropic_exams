@@ -5,6 +5,7 @@ import {
   getBearerTokenProvider,
 } from "@azure/identity";
 import OpenAI from "openai";
+import { preferenceValues, type MemoryUpdate } from "./tutor-memory-types";
 import { TutorServiceError, tutorFailure } from "./tutor-errors";
 import { StreamedTutorJson, type TutorTextDelta } from "./streamed-tutor-json";
 export type { TutorTextDelta } from "./streamed-tutor-json";
@@ -22,10 +23,16 @@ const toolNames = [
   "find_related_questions",
   "get_revealed_answer",
   "get_session_learning_context",
+  "search_conversation",
 ] as const;
 export type AgentModelOutput =
   | { type: "tool"; tool: (typeof toolNames)[number]; arguments: Record<string, unknown> }
-  | ({ type: "final"; approach?: string; relatedQuestionIds?: number[] } & TutorModelOutput);
+  | ({
+      type: "final";
+      approach?: string;
+      relatedQuestionIds?: number[];
+      memoryUpdates?: MemoryUpdate[];
+    } & TutorModelOutput);
 
 const tutorSchema = {
   type: "object",
@@ -52,8 +59,9 @@ export const agentSchema = {
       properties: {
         limit: { type: ["integer", "null"] },
         domainNumber: { type: ["integer", "null"] },
+        query: { type: ["string", "null"] },
       },
-      required: ["limit", "domainNumber"],
+      required: ["limit", "domainNumber", "query"],
     },
     approach: {
       type: ["string", "null"],
@@ -63,6 +71,22 @@ export const agentSchema = {
     message: { type: ["string", "null"] },
     concept: { type: ["string", "null"] },
     nextStep: { type: ["string", "null"] },
+    memoryUpdates: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          key: { type: "string", enum: Object.keys(preferenceValues) },
+          value: {
+            type: ["string", "null"],
+            enum: [...Object.values(preferenceValues).flat(), null],
+          },
+          evidence: { type: "string" },
+        },
+        required: ["key", "value", "evidence"],
+      },
+    },
     relatedQuestionIds: { type: ["array", "null"], items: { type: "integer" } },
   },
   required: [
@@ -74,6 +98,7 @@ export const agentSchema = {
     "concept",
     "nextStep",
     "relatedQuestionIds",
+    "memoryUpdates",
   ],
 };
 
@@ -222,6 +247,7 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
           "concept",
           "nextStep",
           "relatedQuestionIds",
+          "memoryUpdates",
         ].includes(key),
     )
   )
@@ -230,6 +256,7 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
     if (!toolNames.includes(value.tool as (typeof toolNames)[number]) || !object(value.arguments))
       throw invalid();
     if (
+      (value.memoryUpdates !== undefined && value.memoryUpdates !== null) ||
       value.approach !== null ||
       value.message !== null ||
       value.concept !== null ||
@@ -239,7 +266,7 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
       throw invalid();
     const args = value.arguments;
     if (
-      Object.keys(args).some((key) => !["limit", "domainNumber"].includes(key)) ||
+      Object.keys(args).some((key) => !["limit", "domainNumber", "query"].includes(key)) ||
       !("limit" in args) ||
       !("domainNumber" in args)
     )
@@ -256,11 +283,22 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
         Number(args.domainNumber) > 100)
     )
       throw invalid();
-    if (
-      value.tool !== "find_related_questions" &&
-      (args.limit !== null || args.domainNumber !== null)
-    )
-      throw invalid();
+    if (value.tool === "search_conversation") {
+      if (
+        typeof args.query !== "string" ||
+        !args.query.trim() ||
+        args.query.length > 100 ||
+        args.domainNumber !== null
+      )
+        throw invalid();
+    } else {
+      if (args.query !== undefined && args.query !== null) throw invalid();
+      if (
+        value.tool !== "find_related_questions" &&
+        (args.limit !== null || args.domainNumber !== null)
+      )
+        throw invalid();
+    }
     return {
       type: "tool",
       tool: value.tool as (typeof toolNames)[number],
@@ -275,15 +313,34 @@ export function parseAgentModelOutput(value: unknown): AgentModelOutput {
     (!Array.isArray(ids) || ids.length > 5 || ids.some((id) => !Number.isSafeInteger(id) || id < 1))
   )
     throw invalid();
+  const updates = value.memoryUpdates ?? [];
+  if (!Array.isArray(updates) || updates.length > 4) throw invalid();
+  for (const update of updates) {
+    if (
+      !object(update) ||
+      Object.keys(update).sort().join() !== "evidence,key,value" ||
+      typeof update.key !== "string" ||
+      !Object.prototype.hasOwnProperty.call(preferenceValues, update.key) ||
+      typeof update.evidence !== "string" ||
+      !update.evidence.trim() ||
+      update.evidence.length > 1000 ||
+      (update.value !== null &&
+        !(
+          preferenceValues[update.key as keyof typeof preferenceValues] as readonly unknown[]
+        ).includes(update.value))
+    )
+      throw invalid();
+  }
   return {
     type: "final",
+    ...(updates.length ? { memoryUpdates: updates as MemoryUpdate[] } : {}),
     approach: value.approach,
     ...parseTutorOutput(value),
     relatedQuestionIds: Array.isArray(ids) ? [...new Set(ids as number[])] : undefined,
   };
 }
 
-async function generate(
+export async function generateStructured(
   { system, input, signal, onUsage, onDelta }: TutorModelInput & ModelOptions,
   schema: Record<string, unknown>,
   name: string,
@@ -393,11 +450,13 @@ async function generate(
 }
 
 export async function askTutor(input: TutorModelInput & ModelOptions): Promise<TutorModelOutput> {
-  return parseTutorOutput(await generate(input, tutorSchema, "tutor_response"));
+  return parseTutorOutput(await generateStructured(input, tutorSchema, "tutor_response"));
 }
 
 export async function askTutorAgent(
   input: TutorModelInput & ModelOptions,
 ): Promise<AgentModelOutput> {
-  return parseAgentModelOutput(await generate(input, agentSchema, "tutor_agent_decision"));
+  return parseAgentModelOutput(
+    await generateStructured(input, agentSchema, "tutor_agent_decision"),
+  );
 }

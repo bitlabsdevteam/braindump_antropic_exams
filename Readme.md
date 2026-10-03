@@ -44,7 +44,7 @@ Project mode uses `AIProjectClient` from `@azure/ai-projects` and Azure Identity
 - Progress shows independent first-attempt accuracy with sample counts, assisted attempts, review outcomes, and domain breakdowns. It does not claim an exam-readiness or mastery score.
 - The optional 120-minute timer stores an absolute deadline. It survives refresh and continues into review when time expires; coaching remains available throughout.
 
-An opaque HttpOnly cookie identifies the anonymous learner. Progress lasts **30 days from creation** in the same browser; clearing cookies loses access. No account is required. Conversations are limited to 12 stored messages per question and expire after two hours idle or 24 hours total; this does not erase learning progress. Expired records are purged on the next API request. **Reset learning progress** deletes all stored progress and conversations for that browser across certifications. Free-text reasoning and tutor messages are sent to the configured model when coaching is requested; avoid entering personal or confidential information.
+An opaque HttpOnly cookie identifies the anonymous learner. Progress lasts **30 days from creation** in the same browser; clearing cookies loses access. No account is required. Completed conversations, compacted summaries, and explicit teaching preferences are stored in SQLite for the learner’s 30-day lifetime. The model receives bounded recent turns plus a summary of older conversation; revealed-answer memory is excluded whenever the answer is hidden. Use **Memory & conversation history** to inspect or forget memory while keeping grades. Expired records are purged on the next API request. **Reset learning progress** deletes all stored progress and conversations for that browser across certifications. Free-text reasoning and tutor messages are sent to the configured model when coaching is requested; avoid entering personal or confidential information.
 
 ## Source integrity
 
@@ -63,17 +63,18 @@ The importer reads and validates the title/version, time limit, blueprint, discl
 
 ## Commands and verification
 
-| Command                   | Purpose                                                                |
-| ------------------------- | ---------------------------------------------------------------------- |
-| `npm run seed`            | Validate/import PDFs, retaining IDs and reporting source conflicts     |
-| `npm run typecheck`       | TypeScript validation                                                  |
-| `npm run format:check`    | Check Prettier formatting                                              |
-| `npm test`                | Isolated database, API, runtime, provider-contract, and importer tests |
-| `npm run test:e2e`        | Chromium integration tests against an isolated local Next.js server    |
-| `npm run tutor:eval`      | Check the documented 28-case evaluation contract                       |
-| `npm run tutor:eval:live` | Execute 28 model cases plus three hint stages using synthetic content  |
-| `npm run tutor:traces`    | Inspect redacted operational metadata                                  |
-| `npm run build`           | Import PDFs and build production application                           |
+| Command                     | Purpose                                                                  |
+| --------------------------- | ------------------------------------------------------------------------ |
+| `npm run seed`              | Validate/import PDFs, retaining IDs and reporting source conflicts       |
+| `npm run typecheck`         | TypeScript validation                                                    |
+| `npm run format:check`      | Check Prettier formatting                                                |
+| `npm test`                  | Isolated database, API, runtime, provider-contract, and importer tests   |
+| `npm run test:e2e`          | Chromium integration tests against an isolated local Next.js server      |
+| `npm run tutor:eval`        | Check the documented 28-case evaluation contract                         |
+| `npm run tutor:memory:live` | Verify real preference memory, compaction, and recall in isolated SQLite |
+| `npm run tutor:eval:live`   | Execute 28 model cases, three hint stages, and Chiikawa’s introduction   |
+| `npm run tutor:traces`      | Inspect redacted operational metadata                                    |
+| `npm run build`             | Import PDFs and build production application                             |
 
 Browser tests use port 3127 and separate databases under ignored `output/playwright/`; install Chromium with `npx playwright install chromium` if needed. Screenshots and retained failure traces are local artifacts. No standalone linter is configured. Prettier checks formatting; TypeScript and the production build validate code. A scoped PostCSS override applies the patched compatible 8.x dependency without a Next.js major upgrade.
 
@@ -94,4 +95,8 @@ Answer keys and rationales are absent from initial HTML, serialized question pro
 
 Authentication, cross-device progress, generated exam questions, full lessons, and scheduled study planning remain future work.
 
-The tutor streams text directly from Foundry as it arrives, with a short **Tutor approach** summary and actual tool activity. **Stop** cancels an in-flight response. Partial responses are cleared on failure, cancellation, or question changes; only validated completed exchanges enter conversation history. Receiving even a partial hint counts as assistance. Provider reasoning and raw tool payloads are never sent to the browser. Clients request streaming with `Accept: text/event-stream`; ordinary JSON callers remain supported.
+Chiikawa streams text directly from Foundry as it arrives, with a short **Teaching approach** summary and actual tool activity. **Stop** cancels an in-flight response. Partial responses are cleared on failure, cancellation, or question changes; only validated completed exchanges enter conversation history. Receiving even a partial hint counts as assistance. Provider reasoning and raw tool payloads are never sent to the browser. Clients request streaming with `Accept: text/event-stream`; ordinary JSON callers remain supported.
+
+Chiikawa appears beside the question in a sticky desktop panel and below it on smaller screens, with keyboard-accessible shortcuts between the two. The domain select opens the first question in a domain. The panel shares the question’s request state across viewport sizes.
+
+The active personality lives in [SOUL.MD](SOUL.MD). The server composes it with the operational prompt, which takes precedence. Both files are required in production, included in the instruction hash, and cached per process. Restart the server after edits. See [Tutor memory and compaction](docs/tutor-memory.md) for durable SQLite memory, retention, reveal boundaries, and the OpenAI context-engineering guidance used.

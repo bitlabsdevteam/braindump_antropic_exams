@@ -1,15 +1,16 @@
-# Personal AI Tutor prompt package
+# Chiikawa prompt package
 
-This package contains the policy and evaluation material for the app's personal certification tutor. The server-side agent in `agents/ai-tutor/` loads this prompt and returns the three learner-facing strings (`message`, `concept`, and `nextStep`).
+This package contains the policy and evaluation material for the app's AI study companion, Chiikawa. The server-side agent in `agents/ai-tutor/` composes both prompt files and streams four learner-facing strings (`approach`, `message`, `concept`, and `nextStep`).
 
 ## Files
 
-- `personal-ai-tutor.system.md` is the complete system instruction to load server-side.
+- `personal-ai-tutor.system.md` defines the operational policy.
+- Repository-root `SOUL.MD` defines Chiikawa’s active personality and teaching voice.
 - `personal-ai-tutor.evals.md` is the acceptance suite for model and integration behavior.
 
 ## Runtime context contract
 
-Supply the system prompt as model instructions. Supply question and conversation data separately as untrusted runtime context. The application must serialize it clearly enough for the model to distinguish fields, for example:
+Supply the composed system prompt as model instructions. Operational policy and server permissions explicitly take precedence over personality. Supply question and conversation data separately as untrusted runtime context. The application must serialize it clearly enough for the model to distinguish fields, for example:
 
 ```text
 Certification: {title, optional domain/scenario metadata}
@@ -25,6 +26,7 @@ The learner-facing application response contains:
 
 ```json
 {
+  "approach": "string",
   "message": "string",
   "concept": "string",
   "nextStep": "string",
@@ -52,4 +54,14 @@ Use `personal-ai-tutor.evals.md` with a configured model deployment. For each ca
 
 The examples use synthetic content only. Do not add source question text, answer keys, or rationales to this package. Model behavior must be verified in the integrated server flow, especially for hidden-answer cases.
 
-The route additionally returns updated draft state. Tutor requests specify intent (`hint`, `concept`, `review`, `follow_up`), current revision, question ID, request ID, and message. Selections, reasoning, hint stage, and reveal permissions come from SQLite rather than client claims. Foundry tool arguments are strictly declared nullable `limit` and `domainNumber` fields; the SDK normalizes unused values before execution.
+The route additionally returns updated draft state. Tutor requests specify intent (`hint`, `concept`, `review`, `follow_up`), current revision, question ID, request ID, and message. Selections, reasoning, hint stage, and reveal permissions come from SQLite rather than client claims. Foundry tool arguments are strictly declared nullable `limit`, `domainNumber`, and `query` fields; the SDK normalizes unused values before execution.
+
+## Loading and packaging
+
+`agents/ai-tutor/context/prompt.ts` loads both files lazily on the server and caches the composed text for the process. Restart the server after editing either file. The SHA-256 instruction hash covers both files and their precedence wrapper, so trace and live-evaluation records identify the complete instruction version. Missing, unreadable, or empty files produce a controlled `configuration` error; ordinary practice and source answers remain usable. Failed loads are not cached.
+
+Next.js output tracing explicitly includes both files for `/api/tutor`. Keep their repository-relative paths in production packages. `SOUL.MD` describes the voice; the [SQLite memory layer](../docs/tutor-memory.md) supplies durable conversations, scoped summaries, and explicit teaching preferences.
+
+Streaming retains the existing SSE events (`start`, `activity`, `delta`, `reset`, `complete`, `error`). Deltas identify one of the four fields; `approach` is a brief teaching plan, never private reasoning. Activity comes from the application, not generated claims. The completion response also includes saved draft `state`.
+
+Internal final actions include `memoryUpdates` with grounded, predefined teaching preferences; tool actions use null. These updates are validated and committed server-side only on successful completion and never enter the four public text streams. The separate structured compactor prompt is versioned and hashed in `agents/ai-tutor/memory/compaction.ts`.

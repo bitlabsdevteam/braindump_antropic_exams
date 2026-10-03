@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { getQuestion } from "../../../lib/db";
+import { migrateMemory } from "../memory/schema";
 import type { TutorMessage } from "../types";
 
 export const retentionMs = 30 * 24 * 60 * 60 * 1000;
@@ -61,6 +62,7 @@ export function sessionDatabase() {
       SELECT session_id, question_id, MIN(created_at), MAX(created_at)
       FROM messages GROUP BY session_id, question_id;
     INSERT OR IGNORE INTO learning_migrations(version) VALUES (2);`);
+  migrateMemory(db);
   return db;
 }
 
@@ -78,7 +80,7 @@ export function ensureSession(candidate?: string): string {
     : undefined;
   const id = current?.id || createSessionId();
   if (current) {
-    if (current.touchedAt <= now - idleMs) clearConversation(id);
+    if (current.touchedAt <= now - idleMs) clearConversation(id, false);
     database.prepare("UPDATE sessions SET touched_at = ? WHERE id = ?").run(now, id);
   } else database.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(id, now, now);
   // Expiry applies to whole conversations, so old answer-bearing context cannot survive.
@@ -111,9 +113,10 @@ export function sessionExpires(id: string) {
     { created_at: number } | undefined;
   return row ? row.created_at + retentionMs : 0;
 }
-export function clearConversation(id: string) {
+export function clearConversation(id: string, forgetMemory = true) {
   const database = sessionDatabase();
   database.transaction(() => {
+    if (forgetMemory) database.prepare("DELETE FROM tutor_turns WHERE session_id = ?").run(id);
     database.prepare("DELETE FROM messages WHERE session_id = ?").run(id);
     database.prepare("DELETE FROM conversation_windows WHERE session_id = ?").run(id);
     database

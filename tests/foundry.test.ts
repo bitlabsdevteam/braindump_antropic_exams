@@ -397,7 +397,7 @@ test("evaluation fixtures cover all documented cases and withhold hidden mapping
   const cases = buildEvaluationCases();
   assert.deepEqual(
     cases.map((item) => item.id),
-    Array.from({ length: 31 }, (_, index) => index + 1),
+    Array.from({ length: 32 }, (_, index) => index + 1),
   );
   for (const item of cases) {
     assert.ok(item.expectedBehavior && item.failureConditions && item.fixture.learnerMessage);
@@ -409,7 +409,7 @@ test("evaluation fixtures cover all documented cases and withhold hidden mapping
   assert.equal(cases[10].fixture.activeQuestion?.type, "scenario_matching");
   assert.equal(cases[23].fixture.activeQuestion, null);
   assert.deepEqual(
-    cases.slice(28).map((item) => item.fixture.learnerState.hintStage),
+    cases.slice(28, 31).map((item) => item.fixture.learnerState.hintStage),
     [1, 2, 3],
   );
 });

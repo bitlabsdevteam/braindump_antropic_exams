@@ -3,9 +3,7 @@ import { test, expect } from "@playwright/test";
 async function start(page: import("@playwright/test").Page, slug = "architect-professional") {
   await page.goto(`/exams/${slug}/practice`);
   await page.getByRole("button", { name: "Start practice", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Your question coach", exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Chiikawa", exact: true })).toBeVisible();
 }
 
 test("draft persists, server submission stays frozen, hide and retry preserve progress", async ({
@@ -94,6 +92,9 @@ test("timer survives refresh, mobile layout fits, source conflict is flagged", a
     page.getByText("Source review required — excluded from scoring and coaching", { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Get a hint", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("complementary", { name: "Chiikawa", exact: true })).toContainText(
+    "Chiikawa is unavailable while this question is flagged for source review.",
+  );
   await expect(page.getByRole("button", { name: "Submit and reveal", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Reveal without answering", exact: true }).click();
   await expect(page.getByRole("region", { name: "Source answer", exact: true })).toContainText(

@@ -5,7 +5,14 @@ export type TutorTextDelta = {
   text: string;
 };
 const fields = ["approach", "message", "concept", "nextStep"] as const;
-const keys = new Set(["type", "tool", "arguments", ...fields, "relatedQuestionIds"]);
+const keys = new Set([
+  "type",
+  "tool",
+  "arguments",
+  ...fields,
+  "relatedQuestionIds",
+  "memoryUpdates",
+]);
 const fail = () => new TutorServiceError("invalid_output");
 
 /** Incrementally decodes only top-level learner strings. All emitted text is provisional. */

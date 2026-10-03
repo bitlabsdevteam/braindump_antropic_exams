@@ -4,9 +4,11 @@ The tutor uses the Microsoft Foundry AI Projects SDK and runs inside the Next.js
 
 ## Runtime and permissions
 
-Each request permits four model calls, six tool calls, one transient retry, a 60-second wall-clock deadline, and at most 2,000 output tokens per model call. SDK retries are disabled. Learners have one active run and ten new runs per minute; runs abandoned for more than 70 seconds can be reclaimed. Request IDs prevent duplicate execution.
+Each request permits four tutor model calls, at most three tool calls, one transient retry, and a 60-second wall-clock deadline. Threshold-based compaction adds at most one 25-second call within that same deadline. Output budget defaults to 4,096 tokens per model call. SDK retries are disabled. Learners have one active run and ten new runs per minute; runs abandoned for more than 70 seconds can be reclaimed. Request IDs prevent duplicate execution.
 
 Read-only tools:
+
+- `search_conversation`: bounded search of this learner’s active-question history under current reveal permission.
 
 - `get_question_context`: active public question only.
 - `find_related_questions`: up to three deterministic references in the active certification; flagged source questions are excluded.
@@ -19,7 +21,7 @@ Inputs include server-owned selections, optional reasoning, teaching intent, hin
 
 `data/tutor-sessions.db` contains the anonymous 30-day learner identity, immutable attempts, drafts, exposure/assistance, navigation/timer settings, and short-lived messages. Tables use foreign keys with cascade deletion. Question references use stable source keys, validated against the question bank when accessed. Source bank and learner database are separate files; there is no cross-file SQLite foreign key.
 
-Conversations expire after two hours idle or 24 hours total and retain at most 12 messages per question. Hiding an answer deletes that question's conversation. Navigation, hide, retry, and reset invalidate in-flight runs through revisions. Run ownership prevents a rejected duplicate request from releasing another request's lock. Resetting learning progress deletes all learner data; resetting tutor conversation preserves attempts.
+Completed conversations and summaries now persist for the learner’s 30-day lifetime. The old 12-message cache still expires after two hours idle or 24 hours total. Hiding an answer clears that cache and excludes revealed-answer archive records/checkpoints from working context and retrieval. Navigation, hide, retry, and reset invalidate in-flight runs through revisions. Run ownership prevents a rejected duplicate request from releasing another request's lock. Resetting learning progress deletes all learner data; resetting tutor conversation preserves attempts.
 
 Before reveal, neither source mappings, rationale, nor active-question correctness reaches the model. Successful pre-reveal help records assistance; hint requests advance through three conceptual stages. After reveal, the source answer tool supplies authoritative content. Source conflicts are excluded from coaching.
 
@@ -36,3 +38,7 @@ npm run tutor:traces
 Offline tests exercise actual API/data/runtime behavior with isolated databases and mocked model decisions. The documented-coverage command does not invoke a model. The live harness executes synthetic cases, writes incremental reports to `data/tutor-evals/`, and leaves behavioral review pending. Do not equate parser success with passing teaching or disclosure evaluations.
 
 Optional traces under `data/tutor-traces/` record prompt hash, timing, call counts, token usage, tool permissions, retries, and terminal state. They omit learner messages, answers, credentials, full prompts, and raw provider errors. Keep this directory private and rotate/delete trace files as needed; learner reset affects learner records, not redacted operational traces.
+
+## Chiikawa personality
+
+The runtime composes repository-root `SOUL.MD` with `prompts/personal-ai-tutor.system.md`, with operational policy and server permissions taking precedence. Both files are required, packaged by Next.js tracing, and hashed together for traces and evaluations. The successful load is cached per process: restart after prompt edits. Missing or empty instructions return a controlled configuration error without affecting ordinary practice. The four streamed fields are `approach`, `message`, `concept`, and `nextStep`; the first is a short teaching plan, not private reasoning. Durable conversation memory now follows the learner’s 30-day lifetime; see [memory design](../../docs/tutor-memory.md).

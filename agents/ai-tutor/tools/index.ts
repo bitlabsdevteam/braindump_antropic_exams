@@ -1,4 +1,5 @@
 import { getAnswer, getCertificationForQuestion, getQuestion } from "../../../lib/db";
+import { searchConversation } from "../memory/store";
 import { isRevealed } from "../context/session";
 import { learningContext, recommendations } from "../../../lib/practice";
 import type { AgentContext, RelatedQuestion, ToolName } from "../types";
@@ -27,6 +28,16 @@ export function runTool(
   env: ToolEnvironment,
 ): unknown {
   const { context, sessionId } = env;
+  if (name === "search_conversation") {
+    if (typeof raw.query !== "string" || !raw.query.trim() || raw.query.length > 100)
+      throw new ToolPermissionError("A short search query is required.");
+    return searchConversation(
+      sessionId,
+      context.question.id,
+      raw.query,
+      typeof raw.limit === "number" ? raw.limit : 3,
+    );
+  }
   if (name === "get_question_context") return publicQuestion(context.question);
   if (name === "get_revealed_answer") {
     if (!isRevealed(sessionId, context.question.id))

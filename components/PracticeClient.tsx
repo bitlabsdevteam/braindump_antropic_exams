@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import PracticeResults from "./PracticeResults";
-import TutorResponse, { activityLabel, type TutorActivity, type TutorText } from "./TutorResponse";
+import { activityLabel, type TutorActivity, type TutorText } from "./TutorResponse";
+import ChiikawaPanel from "./ChiikawaPanel";
 import { readTutorStream } from "../lib/read-tutor-stream";
 import type { TutorStreamReply } from "../lib/tutor-stream-types";
 import type { Answer, Question } from "../lib/types";
@@ -237,7 +238,7 @@ function QuestionCoach({
     setReply(null);
     setPartial({});
     setActivities([]);
-    setTutorStatus("Connecting to your tutor…");
+    setTutorStatus("Connecting to Chiikawa…");
     const version = ++epoch.current;
     controller.current?.abort();
     const requestController = new AbortController();
@@ -247,7 +248,7 @@ function QuestionCoach({
     try {
       await queue.current;
       if (!current()) return;
-      if (failedSave.current) throw new Error("Reload progress before asking the tutor.");
+      if (failedSave.current) throw new Error("Reload progress before asking Chiikawa.");
       const response = await fetch("/api/tutor", {
         method: "POST",
         cache: "no-store",
@@ -267,7 +268,7 @@ function QuestionCoach({
           if (!current()) return;
           switch (event.type) {
             case "start":
-              setTutorStatus("Connected to your tutor.");
+              setTutorStatus("Connected to Chiikawa.");
               break;
             case "activity":
               setActivities((previous) => [
@@ -279,7 +280,7 @@ function QuestionCoach({
             case "delta":
               if (!receiving) {
                 receiving = true;
-                setTutorStatus("Receiving the tutor’s response…");
+                setTutorStatus("Receiving Chiikawa’s response…");
               }
               setPartial((previous) => ({
                 ...previous,
@@ -291,14 +292,14 @@ function QuestionCoach({
               setReply(null);
               setPartial({});
               setActivities([]);
-              setTutorStatus("The connection was interrupted. Retrying…");
+              setTutorStatus("Chiikawa’s connection was interrupted. Retrying…");
               break;
             case "complete":
               setReply(event.reply);
               setPartial({});
               setServerState(event.reply.state);
               setInput("");
-              setTutorStatus("Tutor response complete.");
+              setTutorStatus("Chiikawa’s response complete.");
               break;
             case "error":
               throw new Error(event.error);
@@ -324,335 +325,288 @@ function QuestionCoach({
   const locked =
     busy || state.submitted || Boolean(answer) || state.visible || question.reviewRequired;
   return (
-    <article
-      className="question-card"
-      aria-labelledby="active-question"
-      id={`question-${question.sourceKey}`}
-    >
-      <div className="question-head">
-        <span className="question-id">{question.sourceKey}</span>
-        <span className="question-type">
-          {question.type.replace(/_/g, " ")} ·{" "}
-          {question.type === "scenario_matching" ? `match ${required} items` : `select ${required}`}
-        </span>
-      </div>
-      <h2 id="active-question" className="question-prompt" tabIndex={-1}>
-        {question.prompt}
-      </h2>
-      <p className="question-help">
-        {[question.domainName, question.scenarioTitle].filter(Boolean).join(" · ")}
-        {question.sourcePage ? ` · PDF page ${question.sourcePage}` : ""}
-      </p>
-      {question.scenarioDescription && (
-        <details className="scenario-context">
-          <summary>Read the scenario</summary>
-          <p>{question.scenarioDescription}</p>
-        </details>
-      )}
-      {question.reviewRequired && (
-        <div className="source-review" role="note">
-          <strong>Source review required — excluded from scoring and coaching</strong>
-          <p>{question.reviewNote}</p>
+    <div className="question-workspace">
+      <article
+        className="question-card"
+        aria-labelledby="active-question"
+        id={`question-${question.sourceKey}`}
+      >
+        <button
+          className="text-button companion-shortcut"
+          onClick={() => document.getElementById("chiikawa-heading")?.focus()}
+        >
+          Ask Chiikawa
+        </button>
+        <div className="question-head">
+          <span className="question-id">{question.sourceKey}</span>
+          <span className="question-type">
+            {question.type.replace(/_/g, " ")} ·{" "}
+            {question.type === "scenario_matching"
+              ? `match ${required} items`
+              : `select ${required}`}
+          </span>
         </div>
-      )}
-      <fieldset className="answer-options" disabled={locked} aria-describedby="selection-help">
-        <legend className="sr-only">Your answer</legend>
-        {question.type === "scenario_matching" ? (
-          question.matchItems.map((item) => (
-            <div className="match-item" key={item.key}>
-              <label htmlFor={`match-${item.key}`}>{item.text}</label>
-              <select
-                id={`match-${item.key}`}
-                className="match-select"
-                value={selected.find((key) => key.startsWith(`${item.key}:`))?.split(":")[1] ?? ""}
-                onChange={(event) => match(item.key, event.target.value)}
-              >
-                <option value="">Choose an option…</option>
-                {question.options.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.text}
-                  </option>
-                ))}
-              </select>
-              {answer && (
-                <p className="correct-hint">
-                  Source pairing:{" "}
-                  {answer.correctKeys
-                    .filter((key) => key.startsWith(`${item.key}:`))
-                    .map(
-                      (key) =>
-                        question.options.find((option) => option.key === key.split(":")[1])?.text,
-                    )
-                    .join(", ")}
-                </p>
-              )}
-            </div>
-          ))
-        ) : (
-          <div className="option-list">
-            {question.options.map((option) => {
-              const correct = answer?.correctKeys.includes(option.key);
-              const wrong = answer && selected.includes(option.key) && !correct;
-              return (
-                <label
-                  className={`question-option ${correct ? "option-correct" : ""} ${wrong ? "option-wrong" : ""}`}
-                  key={option.key}
-                >
-                  <input
-                    type={question.type === "single_choice" ? "radio" : "checkbox"}
-                    name={`answer-${question.id}`}
-                    checked={selected.includes(option.key)}
-                    disabled={
-                      question.type === "multiple_response" &&
-                      !selected.includes(option.key) &&
-                      selected.length >= required
-                    }
-                    onChange={() => choose(option.key)}
-                  />
-                  <span className="option-marker">{option.key}</span>
-                  <span className="option-text">{option.text}</span>
-                  {correct && <span className="answer-status">✓ Source answer</span>}
-                  {wrong && <span className="answer-status">× Your selection</span>}
-                </label>
-              );
-            })}
+        <h2 id="active-question" className="question-prompt" tabIndex={-1}>
+          {question.prompt}
+        </h2>
+        <p className="question-help">
+          {[question.domainName, question.scenarioTitle].filter(Boolean).join(" · ")}
+          {question.sourcePage ? ` · PDF page ${question.sourcePage}` : ""}
+        </p>
+        {question.scenarioDescription && (
+          <details className="scenario-context">
+            <summary>Read the scenario</summary>
+            <p>{question.scenarioDescription}</p>
+          </details>
+        )}
+        {question.reviewRequired && (
+          <div className="source-review" role="note">
+            <strong>Source review required — excluded from scoring and coaching</strong>
+            <p>{question.reviewNote}</p>
           </div>
         )}
-      </fieldset>
-      <p id="selection-help" className="question-help">
-        {state.submitted
-          ? "Attempt recorded. Start a retry to answer again."
-          : `${selected.length} of ${required} selected. ${complete ? "Ready to submit." : "Complete every required selection to submit."}`}
-      </p>
-      <div className="reasoning-input">
-        <label htmlFor="reasoning">
-          Your reasoning <span>(optional)</span>
-        </label>
-        <textarea
-          id="reasoning"
-          maxLength={1000}
-          rows={2}
-          disabled={locked}
-          value={reasoning}
-          onChange={(event) => {
-            setReasoning(event.target.value);
-            save(selected, event.target.value);
-          }}
-          placeholder="What led you to this answer?"
-        />
-        <small role="status">
-          {saving
-            ? "Saving…"
-            : error
-              ? "Changes may not be saved"
-              : "Progress saved in this browser for 30 days"}
-        </small>
-      </div>
-      {state.exposed && !state.submitted && !question.reviewRequired && (
-        <p className="question-help">
-          You have seen this source answer. Future attempts count as review practice.
+        <fieldset className="answer-options" disabled={locked} aria-describedby="selection-help">
+          <legend className="sr-only">Your answer</legend>
+          {question.type === "scenario_matching" ? (
+            question.matchItems.map((item) => (
+              <div className="match-item" key={item.key}>
+                <label htmlFor={`match-${item.key}`}>{item.text}</label>
+                <select
+                  id={`match-${item.key}`}
+                  className="match-select"
+                  value={
+                    selected.find((key) => key.startsWith(`${item.key}:`))?.split(":")[1] ?? ""
+                  }
+                  onChange={(event) => match(item.key, event.target.value)}
+                >
+                  <option value="">Choose an option…</option>
+                  {question.options.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.text}
+                    </option>
+                  ))}
+                </select>
+                {answer && (
+                  <p className="correct-hint">
+                    Source pairing:{" "}
+                    {answer.correctKeys
+                      .filter((key) => key.startsWith(`${item.key}:`))
+                      .map(
+                        (key) =>
+                          question.options.find((option) => option.key === key.split(":")[1])?.text,
+                      )
+                      .join(", ")}
+                  </p>
+                )}
+              </div>
+            ))
+          ) : (
+            <div className="option-list">
+              {question.options.map((option) => {
+                const correct = answer?.correctKeys.includes(option.key);
+                const wrong = answer && selected.includes(option.key) && !correct;
+                return (
+                  <label
+                    className={`question-option ${correct ? "option-correct" : ""} ${wrong ? "option-wrong" : ""}`}
+                    key={option.key}
+                  >
+                    <input
+                      type={question.type === "single_choice" ? "radio" : "checkbox"}
+                      name={`answer-${question.id}`}
+                      checked={selected.includes(option.key)}
+                      disabled={
+                        question.type === "multiple_response" &&
+                        !selected.includes(option.key) &&
+                        selected.length >= required
+                      }
+                      onChange={() => choose(option.key)}
+                    />
+                    <span className="option-marker">{option.key}</span>
+                    <span className="option-text">{option.text}</span>
+                    {correct && <span className="answer-status">✓ Source answer</span>}
+                    {wrong && <span className="answer-status">× Your selection</span>}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </fieldset>
+        <p id="selection-help" className="question-help">
+          {state.submitted
+            ? "Attempt recorded. Start a retry to answer again."
+            : `${selected.length} of ${required} selected. ${complete ? "Ready to submit." : "Complete every required selection to submit."}`}
         </p>
-      )}
-      {error && (
-        <div className="tutor-error" role="alert">
-          <p>{error}</p>
-          <button className="button secondary" onClick={() => window.location.reload()}>
-            Reload progress
-          </button>
+        <div className="reasoning-input">
+          <label htmlFor="reasoning">
+            Your reasoning <span>(optional)</span>
+          </label>
+          <textarea
+            id="reasoning"
+            maxLength={1000}
+            rows={2}
+            disabled={locked}
+            value={reasoning}
+            onChange={(event) => {
+              setReasoning(event.target.value);
+              save(selected, event.target.value);
+            }}
+            placeholder="What led you to this answer?"
+          />
+          <small role="status">
+            {saving
+              ? "Saving…"
+              : error
+                ? "Changes may not be saved"
+                : "Progress saved in this browser for 30 days"}
+          </small>
         </div>
-      )}
-      <div className="question-actions">
-        <div className="question-buttons">
-          {!state.submitted && !state.exposed && (
-            <button
-              className="button"
-              disabled={busy || saving || !complete || Boolean(answer) || question.reviewRequired}
-              onClick={() => void act("submit")}
-            >
-              Submit and reveal
-            </button>
-          )}
-          {!state.submitted && state.exposed && !state.visible && !answer && (
-            <button
-              className="button"
-              disabled={busy || saving || !complete || question.reviewRequired}
-              onClick={() => void act("submit")}
-            >
-              Submit retry and reveal
-            </button>
-          )}
-          <button
-            className="toggle"
-            disabled={busy || saving}
-            onClick={() => void act(answer ? "hide" : "reveal")}
-          >
-            {answer
-              ? "Hide answer"
-              : state.submitted
-                ? "Show source answer"
-                : "Reveal without answering"}
-          </button>
-          {(state.submitted || state.exposed) && !question.reviewRequired && (
-            <button
-              className="button secondary"
-              disabled={busy || saving}
-              onClick={() => void act("retry")}
-            >
-              Try again
-            </button>
-          )}
-        </div>
-      </div>
-      {answer && (
-        <section className="answer-panel" aria-label="Source answer" aria-live="polite">
-          <h3>
-            {question.reviewRequired
-              ? "Disputed source answer — unscored"
-              : state.result
-                ? `${state.result.correct ? "Correct" : "Incorrect"} · ${state.result.kind} attempt`
-                : "Source answer · unscored reveal"}
-          </h3>
-          <div className="answer-list">
-            {answer.correctKeys.map((key) => (
-              <span className="answer-chip" key={key}>
-                {key}
-              </span>
-            ))}
-          </div>
-          <p>{answer.rationale}</p>
-          {answer.reviewNote && <p className="source-review">{answer.reviewNote}</p>}
-        </section>
-      )}
-      {!question.reviewRequired && (
-        <section className="coach-section" aria-label="AI question coach">
-          <h3>Your question coach</h3>
-          <p className="tutor-note">
-            {answer
-              ? "Explore the source rationale and your reasoning. AI commentary may be imperfect."
-              : "Get conceptual guidance while keeping the source answer hidden."}
+        {state.exposed && !state.submitted && !question.reviewRequired && (
+          <p className="question-help">
+            You have seen this source answer. Future attempts count as review practice.
           </p>
-          <div className="coach-actions">
-            {!answer && (
+        )}
+        {error && (
+          <div className="tutor-error" role="alert">
+            <p>{error}</p>
+            <button className="button secondary" onClick={() => window.location.reload()}>
+              Reload progress
+            </button>
+          </div>
+        )}
+        <div className="question-actions">
+          <div className="question-buttons">
+            {!state.submitted && !state.exposed && (
               <button
-                className="tutor-button"
-                disabled={busy || saving || tutorBusy}
-                onClick={() =>
-                  void ask(
-                    "hint",
-                    "Give me the next conceptual hint without identifying an answer.",
-                  )
-                }
+                className="button"
+                disabled={busy || saving || !complete || Boolean(answer) || question.reviewRequired}
+                onClick={() => void act("submit")}
               >
-                {state.hintCount
-                  ? `Next hint · stage ${Math.min(state.hintCount + 1, 3)}/3`
-                  : "Get a hint"}
+                Submit and reveal
+              </button>
+            )}
+            {!state.submitted && state.exposed && !state.visible && !answer && (
+              <button
+                className="button"
+                disabled={busy || saving || !complete || question.reviewRequired}
+                onClick={() => void act("submit")}
+              >
+                Submit retry and reveal
               </button>
             )}
             <button
-              className="tutor-button"
-              disabled={busy || saving || tutorBusy}
-              onClick={() =>
-                void ask("concept", "Explain the underlying concept using a neutral example.")
-              }
+              className="toggle"
+              disabled={busy || saving}
+              onClick={() => void act(answer ? "hide" : "reveal")}
             >
-              Explain the concept
+              {answer
+                ? "Hide answer"
+                : state.submitted
+                  ? "Show source answer"
+                  : "Reveal without answering"}
             </button>
-            {answer && (
-              <button
-                className="tutor-button"
-                disabled={busy || saving || tutorBusy}
-                onClick={() =>
-                  void ask(
-                    "review",
-                    "Explain the source rationale and help me understand my reasoning and the distractors where supported.",
-                  )
-                }
-              >
-                Review my answer
-              </button>
-            )}
-          </div>
-          <div className="tutor-stream-status">
-            <p className="tutor-state" role="status" aria-live="polite" aria-atomic="true">
-              {tutorStatus}
-            </p>
-            {tutorBusy && (
+            {(state.submitted || state.exposed) && !question.reviewRequired && (
               <button
                 className="button secondary"
-                onClick={() => {
-                  cancelTutor();
-                  setTutorStatus("Response stopped. You can ask again.");
-                }}
+                disabled={busy || saving}
+                onClick={() => void act("retry")}
               >
-                Stop response
+                Try again
               </button>
             )}
           </div>
-          {tutorError && (
-            <p className="tutor-error" role="alert">
-              {tutorError}
+        </div>
+        {answer && (
+          <section className="answer-panel" aria-label="Source answer" aria-live="polite">
+            <h3>
+              {question.reviewRequired
+                ? "Disputed source answer — unscored"
+                : state.result
+                  ? `${state.result.correct ? "Correct" : "Incorrect"} · ${state.result.kind} attempt`
+                  : "Source answer · unscored reveal"}
+            </h3>
+            <div className="answer-list">
+              {answer.correctKeys.map((key) => (
+                <span className="answer-chip" key={key}>
+                  {key}
+                </span>
+              ))}
+            </div>
+            <p>{answer.rationale}</p>
+            {answer.reviewNote && <p className="source-review">{answer.reviewNote}</p>}
+          </section>
+        )}
+        <section className="related-practice">
+          <h3>Practice next</h3>
+          {related.length ? (
+            <ul>
+              {related.map((item) => (
+                <li key={item.sourceKey}>
+                  <button
+                    className="related-link"
+                    disabled={busy || saving}
+                    onClick={() => onNavigate(item.sourceKey)}
+                  >
+                    <strong>{item.sourceKey}</strong> — {item.reason}
+                    <span>{item.prompt}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="question-help">
+              No new questions or unresolved mistakes remain. Use the question navigator to revisit
+              a topic.
             </p>
           )}
-          {(reply || Object.keys(partial).length > 0 || activities.length > 0) && (
-            <TutorResponse text={reply ?? partial} activities={activities} streaming={tutorBusy} />
-          )}
-          <form
-            className="tutor-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void ask("follow_up", input.trim());
-            }}
-          >
-            <label htmlFor="follow-up">Ask a follow-up</label>
-            <div>
-              <textarea
-                id="follow-up"
-                value={input}
-                maxLength={1000}
-                rows={2}
-                onChange={(event) => setInput(event.target.value)}
-              />
-              <button className="button" disabled={busy || saving || tutorBusy || !input.trim()}>
-                Send
-              </button>
-            </div>
-          </form>
         </section>
-      )}
-      <section className="related-practice">
-        <h3>Practice next</h3>
-        {related.length ? (
-          <ul>
-            {related.map((item) => (
-              <li key={item.sourceKey}>
-                <button
-                  className="related-link"
-                  disabled={busy || saving}
-                  onClick={() => onNavigate(item.sourceKey)}
-                >
-                  <strong>{item.sourceKey}</strong> — {item.reason}
-                  <span>{item.prompt}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="question-help">
-            No new questions or unresolved mistakes remain. Use the question navigator to revisit a
-            topic.
-          </p>
-        )}
-      </section>
-    </article>
+      </article>
+      <ChiikawaPanel
+        questionId={question.id}
+        memoryVersion={reply?.runId ?? ""}
+        onForget={async (key) => {
+          cancelTutor();
+          setBusy(true);
+          try {
+            const data = await api<{ state: DraftState }>(
+              "/api/tutor/memory",
+              { questionId: question.id, ...(key ? { key } : {}) },
+              "DELETE",
+            );
+            if (alive.current) setServerState(data.state);
+            await onRefresh();
+          } finally {
+            if (alive.current) setBusy(false);
+          }
+        }}
+        unavailable={question.reviewRequired}
+        revealed={Boolean(answer)}
+        hintCount={state.hintCount}
+        disabled={busy || saving}
+        streaming={tutorBusy}
+        status={tutorStatus}
+        error={tutorError}
+        text={reply ?? partial}
+        activities={activities}
+        input={input}
+        onInput={setInput}
+        onAsk={(intent, message) => void ask(intent, message)}
+        onStop={() => {
+          cancelTutor();
+          setTutorStatus("Chiikawa’s response stopped. You can ask again.");
+        }}
+      />
+    </div>
   );
 }
 
 export default function PracticeClient({
   questions,
+  domains,
   timeLimitMinutes,
   certification,
 }: {
   questions: Question[];
+  domains: { number: number; name: string }[];
   timeLimitMinutes: number | null;
   certification: string;
 }) {
@@ -921,7 +875,8 @@ export default function PracticeClient({
         {confirmReset && (
           <div className="reset-confirm" role="group" aria-label="Confirm progress reset">
             <p>
-              Delete all progress and tutor conversations for every certification in this browser?
+              Delete all progress and Chiikawa conversations for every certification in this
+              browser?
             </p>
             <button className="button" disabled={busy || childBusy} onClick={() => void reset()}>
               Delete my progress
@@ -939,7 +894,7 @@ export default function PracticeClient({
       {!snapshot.settings.started ? (
         <section className="timer-setup">
           <p className="eyebrow">Set your pace</p>
-          <h2>Practice with your question coach</h2>
+          <h2>Practice with Chiikawa</h2>
           <p>Try each question, ask for hints, then reveal the source answer and learn from it.</p>
           <div className="timer-choices">
             <label className={`timer-choice ${!timed ? "selected" : ""}`}>
@@ -981,22 +936,48 @@ export default function PracticeClient({
             )}
           </div>
           <nav className="question-navigation" aria-label="Question navigation">
-            <label htmlFor="question-nav">
-              Question {index + 1} of {questions.length}
-            </label>
-            <select
-              id="question-nav"
-              value={current.sourceKey}
-              disabled={busy || childBusy}
-              onChange={(event) => void navigate(event.target.value)}
-            >
-              {visibleQuestions.map((question) => (
-                <option key={question.sourceKey} value={question.sourceKey}>
-                  {question.ordinal}. {question.sourceKey}
-                  {question.reviewRequired ? " · source review" : ""}
-                </option>
-              ))}
-            </select>
+            <div className="navigation-field">
+              <label htmlFor="domain-nav">Domain</label>
+              <select
+                id="domain-nav"
+                value={current.domainNumber ?? ""}
+                disabled={busy || childBusy}
+                onChange={(event) => {
+                  const first = questions.find(
+                    (question) => question.domainNumber === Number(event.target.value),
+                  );
+                  if (first) {
+                    setReviewOnly(false);
+                    void navigate(first.sourceKey);
+                  }
+                }}
+              >
+                {current.domainNumber === null && <option value="">No domain assigned</option>}
+                {domains.map((domain) => (
+                  <option key={domain.number} value={domain.number}>
+                    {domain.number}. {domain.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="navigation-field">
+              <label htmlFor="question-nav">
+                Question {index + 1} of {questions.length}
+              </label>
+              <select
+                id="question-nav"
+                value={current.sourceKey}
+                disabled={busy || childBusy}
+                onChange={(event) => void navigate(event.target.value)}
+              >
+                {visibleQuestions.map((question) => (
+                  <option key={question.sourceKey} value={question.sourceKey}>
+                    {question.ordinal}. {question.sourceKey}
+                    {question.reviewRequired ? " · source review" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
           </nav>
           {reviewOnly && !visibleQuestions.length ? (
             <div className="empty-state">

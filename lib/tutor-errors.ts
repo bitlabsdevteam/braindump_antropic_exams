@@ -1,4 +1,10 @@
 const failures = {
+  context_limit: {
+    message:
+      "This question and its context exceed Chiikawa’s configured limit. Practice and source answers remain available.",
+    action:
+      "Verify FOUNDRY_CONTEXT_WINDOW_TOKENS against the deployment and inspect context-budget traces.",
+  },
   content_filter: {
     message:
       "The model service declined this request. Try asking about the question’s concept in a different way.",
@@ -6,42 +12,43 @@ const failures = {
       "The service content filter rejected the request. Rephrase it; do not change credentials or disable the filter.",
   },
   configuration: {
-    message: "The AI tutor setup is incomplete. Practice and source answers are still available.",
-    action: "Run npm run tutor:check and check the endpoint, deployment, and credential settings.",
+    message: "Chiikawa’s setup is incomplete. Practice and source answers are still available.",
+    action:
+      "Check SOUL.MD and prompts/personal-ai-tutor.system.md are packaged and nonempty; restart after edits. Run npm run tutor:check for endpoint, deployment, and credentials.",
   },
   authentication: {
-    message: "The AI tutor cannot access its model. Practice progress is saved.",
+    message: "Chiikawa cannot access its model. Practice progress is saved.",
     action:
       "Verify the configured resource key or Azure identity and its Foundry data-plane access.",
   },
   deployment: {
-    message: "The AI tutor model is unavailable. Practice progress is saved.",
+    message: "Chiikawa’s model is unavailable. Practice progress is saved.",
     action: "Verify that FOUNDRY_MODEL names a deployment available at the configured endpoint.",
   },
   request: {
-    message: "The AI tutor model could not accept this request. Practice progress is saved.",
+    message: "Chiikawa’s model could not accept this request. Practice progress is saved.",
     action:
       "Use a deployment supporting Responses and strict JSON output; run npm run tutor:check.",
   },
   rate_limit: {
-    message: "The AI tutor is busy. Please wait a moment and try again.",
+    message: "Chiikawa is busy. Please wait a moment and try again.",
     action: "Check deployment quota and retry after the service rate limit clears.",
   },
   timeout: {
-    message: "The AI tutor took too long to respond. Please try again.",
+    message: "Chiikawa took too long to respond. Please try again.",
     action: "Check model latency and network access; run npm run tutor:check.",
   },
   incomplete: {
-    message: "The AI tutor could not finish its response. Please try again.",
+    message: "Chiikawa could not finish its response. Please try again.",
     action: "Check output budget and model compatibility with npm run tutor:check.",
   },
   invalid_output: {
-    message: "The AI tutor returned an unreadable response. Please try again.",
+    message: "Chiikawa returned an unreadable response. Please try again.",
     action: "Check strict structured-output support with npm run tutor:check.",
   },
   unavailable: {
     message:
-      "The AI tutor is temporarily unavailable. Your practice progress is saved; please try again.",
+      "Chiikawa is temporarily unavailable. Your practice progress is saved; please try again.",
     action: "Check network and service availability with npm run tutor:check.",
   },
 } as const;

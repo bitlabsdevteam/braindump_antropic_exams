@@ -40,14 +40,21 @@ export type AgentContext = {
   certificationTitle: string;
   state: LearnerState;
   history: TutorMessage[];
+  memory?: {
+    preferences: { key: string; value: string }[];
+    summary: import("../../lib/tutor-memory-types").MemorySummary | null;
+    omittedOlderTurns: boolean;
+  };
 };
 export type ToolName =
   | "get_question_context"
   | "find_related_questions"
   | "get_revealed_answer"
-  | "get_session_learning_context";
+  | "get_session_learning_context"
+  | "search_conversation";
 export type ToolCall = { type: "tool"; tool: ToolName; arguments: Record<string, unknown> };
 export type FinalAnswer = {
+  memoryUpdates?: import("../../lib/tutor-memory-types").MemoryUpdate[];
   type: "final";
   approach?: string;
   message: string;

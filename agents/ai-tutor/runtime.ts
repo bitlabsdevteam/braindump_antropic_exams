@@ -1,5 +1,7 @@
 import { askTutorAgent, isTransientFoundryError } from "../../lib/foundry";
 import { TutorServiceError, tutorFailure } from "../../lib/tutor-errors";
+import { prepareMemory, contextBudget, bytes, type CompactModel } from "./memory/compaction";
+import { appendTurn, importLegacyTurns, conversationText } from "./memory/store";
 import { getTutorPrompt } from "./context/prompt";
 import { addMessage, history, runActive, sessionDatabase } from "./context/session";
 import { PracticeError, recordAssistance, revisionMatches } from "../../lib/practice";
@@ -26,7 +28,7 @@ export function runtimeInstructions(callsRemaining: number, toolsRemaining: numb
     callsRemaining === 1 || toolsRemaining === 0
       ? "This is a final-only call. Return a final response now; no tools are available. Use the supplied context and tool results. If something is missing, state that limitation rather than inventing it."
       : "Choose a tool only when its result is necessary; the active question is already supplied. Reserve one model call for the final response.";
-  return `${getTutorPrompt().text}\n\nYou operate through a bounded agent harness. Tools: get_question_context, find_related_questions, get_revealed_answer, get_session_learning_context. Use get_revealed_answer only after the server grants access. Each toolResults entry names its tool and contains its result. Never claim a tool result you did not receive. Model calls remaining, including this call: ${callsRemaining}. Tool calls remaining: ${toolsRemaining}. ${budget} A final response must satisfy the required JSON fields in the base instructions.`;
+  return `${getTutorPrompt().text}\n\nYou operate through a bounded agent harness. Tools: get_question_context, find_related_questions, get_revealed_answer, get_session_learning_context, search_conversation. Use get_revealed_answer only after the server grants access. Each toolResults entry names its tool and contains its result. Never claim a tool result you did not receive. Model calls remaining, including this call: ${callsRemaining}. Tool calls remaining: ${toolsRemaining}. ${budget} A final response must satisfy the required JSON fields in the base instructions.`;
 }
 function inputFor(context: AgentContext, message: string, toolResults: ToolResult[]) {
   return JSON.stringify(
@@ -46,6 +48,7 @@ function inputFor(context: AgentContext, message: string, toolResults: ToolResul
       },
       learnerState: context.state,
       conversation: context.history,
+      memory: context.memory,
       learnerMessage: message,
       toolResults,
     },
@@ -85,6 +88,7 @@ export async function runTutorAgent(
     model?: typeof askTutorAgent;
     timeoutMs?: number;
     onEvent?: (event: TutorRuntimeEvent) => void;
+    compactor?: CompactModel;
   } = {},
 ): Promise<TutorReply> {
   const prompt = getTutorPrompt();
@@ -115,17 +119,64 @@ export async function runTutorAgent(
   let retried = false;
   try {
     assertCurrent();
-    // Legacy failed requests may have persisted a user-only turn. Pruned history
-    // can also begin with an orphan assistant. Neither belongs in model context.
-    context.history = completedConversation(history(request.sessionId, request.questionId));
     emit({ type: "start", runId: trace.runId, answerRevealed: context.state.answerRevealed });
     emit({ type: "activity", id: "question", stage: "question", state: "done" });
+    emit({ type: "activity", id: "memory", stage: "memory", state: "active" });
+    importLegacyTurns(
+      request.sessionId,
+      request.questionId,
+      context.question.sourceKey,
+      context.state.answerRevealed,
+    );
+    const memory = await prepareMemory({
+      sessionId: request.sessionId,
+      sourceKey: context.question.sourceKey,
+      revealed: context.state.answerRevealed,
+      signal: controller.signal,
+      assertCurrent,
+      model: dependencies.compactor,
+      onActivity: (state) =>
+        emit({ type: "activity", id: "compaction", stage: "compaction", state }),
+      onTrace: (data) => traceEvent(trace, String(data.event), data),
+    });
+    // Legacy cache contains only short-lived context; new complete exchanges use the durable archive.
+    context.history =
+      memory.recent.length || memory.summary || memory.omittedOlderTurns
+        ? memory.recent.flatMap((turn) => [
+            { role: "user" as const, content: turn.user },
+            { role: "assistant" as const, content: conversationText(turn.assistant) },
+          ])
+        : completedConversation(history(request.sessionId, request.questionId));
+    context.memory = {
+      preferences: memory.preferences.map(({ key, value }) => ({ key, value })),
+      summary: memory.summary,
+      omittedOlderTurns: memory.omittedOlderTurns,
+    };
+    emit({ type: "activity", id: "memory", stage: "memory", state: "done" });
     while (calls < maxCalls) {
       assertCurrent();
       calls += 1;
       traceEvent(trace, "model_call", { count: calls });
       emit({ type: "activity", id: `model-${calls}`, stage: "model", state: "active" });
       let decision;
+      const system = runtimeInstructions(
+        maxCalls - calls + 1,
+        Math.min(maxTools - toolCalls, maxCalls - calls),
+      );
+      let input = inputFor(context, request.message, tools);
+      // UTF-8 bytes conservatively bound text tokens; reserve output and wire/schema overhead.
+      const { inputBytes: budget, outputTokens } = contextBudget();
+      while (bytes(system) + bytes(input) > budget && context.history.length) {
+        context.history.splice(0, 2);
+        if (context.memory) context.memory.omittedOlderTurns = true;
+        input = inputFor(context, request.message, tools);
+      }
+      if (bytes(system) + bytes(input) > budget) throw new TutorServiceError("context_limit");
+      traceEvent(trace, "context_budget", {
+        inputBytes: bytes(system) + bytes(input),
+        budget,
+        reservedOutputTokens: outputTokens,
+      });
       try {
         // Race the deadline as identity token acquisition may not honor fetch cancellation.
         decision = await new Promise<Awaited<ReturnType<typeof askTutorAgent>>>(
@@ -137,11 +188,8 @@ export async function runTutorAgent(
               return;
             }
             model({
-              system: runtimeInstructions(
-                maxCalls - calls + 1,
-                Math.min(maxTools - toolCalls, maxCalls - calls),
-              ),
-              input: inputFor(context, request.message, tools),
+              system,
+              input,
               signal: controller.signal,
               onUsage: (usage) => traceEvent(trace, "usage", usage),
               onDelta: dependencies.onEvent
@@ -220,6 +268,29 @@ export async function runTutorAgent(
                 concept: final.concept,
                 nextStep: final.nextStep,
               }),
+            });
+            appendTurn({
+              sessionId: request.sessionId,
+              sourceKey: context.question.sourceKey,
+              requestId: request.requestId,
+              revealed: context.state.answerRevealed,
+              user: request.message,
+              reply: {
+                approach: final.approach,
+                message: final.message,
+                concept: final.concept,
+                nextStep: final.nextStep,
+              },
+              tools: tools.map((item) => ({
+                tool: item.tool,
+                allowed: !(
+                  item.result &&
+                  typeof item.result === "object" &&
+                  "error" in item.result
+                ),
+              })),
+              promptHash: prompt.hash,
+              updates: final.memoryUpdates ?? [],
             });
             if (!context.state.answerRevealed)
               recordAssistance(

@@ -326,8 +326,7 @@ p {
   margin: 0 auto;
   padding: 44px 0 90px;
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
-  gap: 66px;
+  grid-template-columns: minmax(0, 1fr);
 }
 .rail {
   position: sticky;
@@ -1606,4 +1605,167 @@ h2.question-prompt {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Chiikawa shares one question workspace at every viewport size. */
+.question-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.question-workspace .question-card {
+  margin-bottom: 0;
+}
+.chiikawa-panel {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--orange-dark);
+  background: var(--paper);
+  overflow-wrap: anywhere;
+}
+.chiikawa-header h2 {
+  margin: 0;
+  font:
+    500 34px Fraunces,
+    serif;
+  letter-spacing: -0.04em;
+  scroll-margin-top: 24px;
+}
+.chiikawa-header > p {
+  margin: 6px 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.chiikawa-panel .coach-actions {
+  gap: 8px;
+  margin: 12px 0;
+}
+.chiikawa-panel .tutor-button {
+  width: 100%;
+}
+.chiikawa-panel .tutor-stream-status {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chiikawa-content {
+  min-height: 0;
+  scrollbar-gutter: stable;
+  overflow-wrap: anywhere;
+}
+.chiikawa-content:empty {
+  display: none;
+}
+.chiikawa-panel .tutor-panel {
+  margin: 0;
+  padding: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  animation: none;
+}
+.chiikawa-panel .tutor-form {
+  margin-top: 16px;
+}
+.chiikawa-panel .tutor-form > div {
+  flex-direction: column;
+  gap: 8px;
+}
+.chiikawa-panel .tutor-form textarea {
+  width: 100%;
+  max-height: 140px;
+}
+.chiikawa-panel .tutor-error {
+  display: block;
+}
+.question-navigation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: end;
+}
+.navigation-field {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+.navigation-field select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.companion-shortcut {
+  margin-bottom: 12px;
+}
+#active-question {
+  scroll-margin-top: 24px;
+}
+@media (min-width: 1024px) {
+  .question-workspace {
+    grid-template-columns: 340px minmax(0, 1fr);
+  }
+  .question-workspace .question-card {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .chiikawa-panel {
+    grid-column: 1;
+    grid-row: 1;
+    position: sticky;
+    top: 20px;
+    max-height: calc(100dvh - 40px);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .chiikawa-panel > * {
+    flex-shrink: 0;
+  }
+  .chiikawa-panel .chiikawa-content {
+    flex: 0 1 auto;
+    overflow-y: auto;
+    overflow-anchor: none;
+    padding: 4px;
+  }
+  .companion-shortcut {
+    display: none;
+  }
+  .pagination {
+    margin-left: 364px;
+  }
+}
+@media (max-width: 560px) {
+  .question-navigation {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.chiikawa-memory {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.chiikawa-memory > .text-button {
+  text-align: left;
+}
+.chiikawa-memory h3 {
+  font-size: 15px;
+  margin: 16px 0 8px;
+}
+.chiikawa-memory p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chiikawa-memory ul {
+  padding-left: 18px;
+}
+.memory-turn {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+#chiikawa-memory-details {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px;
+  scrollbar-gutter: stable;
 }
