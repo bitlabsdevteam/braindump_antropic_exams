@@ -19,6 +19,19 @@ export type DomainProgress = {
   independent: number;
   correct: number;
 };
+export type PracticeResult = {
+  correct: number;
+  total: number;
+  attempted: number;
+  unanswered: number;
+  excluded: number;
+  percentage: number;
+  independent: number;
+  assisted: number;
+  review: number;
+  unansweredKeys: string[];
+  domains: { name: string; correct: number; total: number; attempted: number }[];
+};
 export type PracticeSnapshot = {
   states: Record<string, DraftState>;
   settings: { questionKey: string | null; started: boolean; deadline: number | null };
@@ -33,6 +46,7 @@ export type PracticeSnapshot = {
   };
   mistakeKeys: string[];
   expiresAt: number;
+  result: PracticeResult;
 };
 export type Recommendation = Pick<
   Question,

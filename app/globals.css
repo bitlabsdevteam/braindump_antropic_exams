@@ -1511,3 +1511,39 @@ h2.question-prompt {
 .correct-hint {
   color: #365f30;
 }
+
+.result-completion {
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+.result-unanswered {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  margin: 16px 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.result-domain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.result-domain-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.result-domain-list small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+}
+.result-domain-list strong {
+  white-space: nowrap;
+  color: var(--orange-dark);
+}

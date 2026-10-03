@@ -324,6 +324,15 @@ export function practiceSnapshot(id: string, slug: string): PracticeSnapshot {
     latest.set(attempt.source_key, attempt);
   }
   const independent = [...first.values()].filter((row) => row.kind === "independent");
+  // The exam mark is one point per scorable question's first saved attempt.
+  // Never grade unsent drafts or let later retries rewrite the original mark.
+  const scorable = questions.filter((question) => !question.reviewRequired);
+  const firstScorable = scorable.flatMap((question) => {
+    const attempt = first.get(question.sourceKey);
+    return attempt ? [attempt] : [];
+  });
+  const correct = firstScorable.filter((attempt) => attempt.correct).length;
+  const resultDomains = [...new Set(scorable.map((question) => question.domainName || "General"))];
   const names = [...new Set(questions.map((question) => question.domainName || "General"))];
   const settings = database
     .prepare(
@@ -333,6 +342,35 @@ export function practiceSnapshot(id: string, slug: string): PracticeSnapshot {
     { questionKey: string | null; started: number; deadline: number | null } | undefined;
   return {
     states,
+    result: {
+      correct,
+      total: scorable.length,
+      attempted: firstScorable.length,
+      unanswered: scorable.length - firstScorable.length,
+      excluded: questions.length - scorable.length,
+      percentage: scorable.length ? Math.round((correct / scorable.length) * 100) : 0,
+      independent: firstScorable.filter((attempt) => attempt.kind === "independent").length,
+      assisted: firstScorable.filter((attempt) => attempt.kind === "assisted").length,
+      review: firstScorable.filter((attempt) => attempt.kind === "review").length,
+      unansweredKeys: scorable
+        .filter((question) => !first.has(question.sourceKey))
+        .map((question) => question.sourceKey),
+      domains: resultDomains.map((name) => {
+        const domainQuestions = scorable.filter(
+          (question) => (question.domainName || "General") === name,
+        );
+        const domainAttempts = domainQuestions.flatMap((question) => {
+          const attempt = first.get(question.sourceKey);
+          return attempt ? [attempt] : [];
+        });
+        return {
+          name,
+          total: domainQuestions.length,
+          attempted: domainAttempts.length,
+          correct: domainAttempts.filter((attempt) => attempt.correct).length,
+        };
+      }),
+    },
     expiresAt: sessionExpires(id),
     settings: settings
       ? { ...settings, started: Boolean(settings.started) }

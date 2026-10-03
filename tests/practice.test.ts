@@ -428,3 +428,113 @@ test("routes validate malformed bodies, cross-origin writes, certification scope
   assert.match(cookie, /HttpOnly/i);
   assert.match(cookie, /SameSite=lax/i);
 });
+
+function wrongSelection(question: import("../lib/types").Question) {
+  const correct = bank.getAnswer(question.id)!.correctKeys;
+  if (question.type === "scenario_matching") {
+    const [item, option] = correct[0].split(":");
+    return [
+      `${item}:${question.options.find((candidate) => candidate.key !== option)!.key}`,
+      ...correct.slice(1),
+    ];
+  }
+  return [
+    question.options.find((option) => !correct.includes(option.key))!.key,
+    ...correct.slice(1),
+  ];
+}
+
+test("final marks include every question format across all four complete certifications", () => {
+  const id = fresh();
+  for (const certification of bank.getCertifications()) {
+    const all = bank.getQuestions(certification.slug);
+    const scorable = all.filter((question) => !question.reviewRequired);
+    let expectedCorrect = 0;
+    for (const [index, question] of scorable.entries()) {
+      const correct = index % 3 !== 0;
+      const draft = practice.saveDraft(
+        id,
+        question.id,
+        correct ? bank.getAnswer(question.id)!.correctKeys : wrongSelection(question),
+        "",
+        0,
+      );
+      if (correct) expectedCorrect += 1;
+      practice.submitAttempt(id, question.id, `complete-${question.sourceKey}`, draft.revision);
+    }
+    const result = practice.practiceSnapshot(id, certification.slug).result;
+    assert.equal(result.correct, expectedCorrect);
+    assert.equal(result.total, scorable.length);
+    assert.equal(result.attempted, scorable.length);
+    assert.equal(result.unanswered, 0);
+    assert.deepEqual(result.unansweredKeys, []);
+    assert.equal(result.percentage, Math.round((expectedCorrect / scorable.length) * 100));
+    assert.equal(result.excluded, certification.slug === "developer-foundations" ? 1 : 0);
+    assert.equal(
+      result.domains.reduce((sum, domain) => sum + domain.correct, 0),
+      expectedCorrect,
+    );
+    assert.equal(
+      result.domains.reduce((sum, domain) => sum + domain.total, 0),
+      scorable.length,
+    );
+    assert.equal(
+      result.domains.reduce((sum, domain) => sum + domain.attempted, 0),
+      scorable.length,
+    );
+    const serialized = JSON.stringify(result);
+    assert.ok(
+      !serialized.includes("correctKeys") &&
+        !serialized.includes("rationale") &&
+        !serialized.includes("selected"),
+    );
+  }
+});
+
+test("partial results leave drafts and reveals unscored and retain first marks after retries", () => {
+  const id = fresh();
+  const empty = practice.practiceSnapshot(id, "architect-professional").result;
+  assert.equal(empty.correct, 0);
+  assert.equal(empty.percentage, 0);
+  assert.equal(empty.unanswered, 63);
+  saveCorrect(id, matching); // Valid but never submitted.
+  practice.revealAnswer(id, multiple.id); // Explicitly unscored.
+  const wrong = practice.saveDraft(id, single.id, wrongSelection(single), "", 0);
+  practice.submitAttempt(id, single.id, "first-mark", wrong.revision);
+  practice.retryQuestion(id, single.id, practice.getState(id, single.id).revision);
+  const retry = saveCorrect(id, single);
+  practice.submitAttempt(id, single.id, "retry-mark", retry.revision);
+  const result = practice.practiceSnapshot(id, "architect-professional").result;
+  assert.equal(result.correct, 0);
+  assert.equal(result.attempted, 1);
+  assert.equal(result.unanswered, 62);
+  assert.ok(result.unansweredKeys.includes(matching.sourceKey));
+  assert.ok(result.unansweredKeys.includes(multiple.sourceKey));
+  assert.ok(!result.unansweredKeys.includes(single.sourceKey));
+  assert.equal(result.independent, 1);
+  assert.equal(result.review, 0); // Later retries are not added to the final mark.
+  assert.deepEqual(practice.practiceSnapshot(id, "architect-professional").result, result);
+  sessions.resetSession(id);
+  const replacement = sessions.ensureSession(id);
+  assert.equal(
+    practice.practiceSnapshot(replacement, "architect-professional").result.attempted,
+    0,
+  );
+});
+
+test("final practice marks include assisted and previously revealed first submissions explicitly", () => {
+  const id = fresh();
+  const assisted = saveCorrect(id, single);
+  practice.recordAssistance(id, single.id, true);
+  practice.submitAttempt(id, single.id, "first-assisted", assisted.revision);
+  practice.revealAnswer(id, multiple.id);
+  practice.retryQuestion(id, multiple.id, practice.getState(id, multiple.id).revision);
+  const review = saveCorrect(id, multiple);
+  practice.submitAttempt(id, multiple.id, "first-review", review.revision);
+  const result = practice.practiceSnapshot(id, "architect-professional").result;
+  assert.equal(result.correct, 2);
+  assert.equal(result.assisted, 1);
+  assert.equal(result.review, 1);
+  assert.equal(result.independent, 0);
+  assert.equal(result.percentage, 3);
+});

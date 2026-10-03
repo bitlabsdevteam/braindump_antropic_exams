@@ -38,6 +38,7 @@ The connection uses `AIProjectClient` from `@azure/ai-projects` and Azure Identi
 - **Submit and reveal** records one immutable, server-graded attempt and shows the PDF answer and rationale. Duplicate submissions do not create extra attempts.
 - **Reveal without answering** records exposure but does not count as a scored attempt.
 - **Try again** starts a fresh draft. Attempts after seeing an answer are labeled review, even when later answered without hints.
+- **Finish and view results** replaces Next on the last question. The results screen shows the total mark, percentage, and marks by domain, using the first submitted attempt for each scorable question. Unsubmitted drafts and unscored reveals earn no marks; flagged source questions are excluded from the denominator. Results survive refresh, and you can return to review or complete unanswered questions. A **View results** action is also available after all scorable questions are submitted or the timer expires.
 - The coach offers three progressive hint stages, concept explanations, and post-reveal review. Source text remains separate from AI commentary.
 - Suggestions prioritize unresolved mistakes, then unattempted questions in the current domain, then other domains in the same certification. The learner chooses when to navigate.
 - Progress shows independent first-attempt accuracy with sample counts, assisted attempts, review outcomes, and domain breakdowns. It does not claim an exam-readiness or mastery score.

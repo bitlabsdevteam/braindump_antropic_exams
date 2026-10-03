@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import PracticeResults from "./PracticeResults";
 import type { Answer, Question } from "../lib/types";
 import type {
   DraftState,
@@ -612,6 +613,7 @@ export default function PracticeClient({
   const [generation, setGeneration] = useState(0);
   const [reviewOnly, setReviewOnly] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [showResults, setShowResults] = useState(false);
   const onBusy = useCallback((value: boolean) => setChildBusy(value), []);
   const refresh = useCallback(async () => {
     const next = await api<PracticeSnapshot>(
@@ -630,6 +632,10 @@ export default function PracticeClient({
           (question) => question.sourceKey === (requested || data.settings.questionKey),
         );
         setIndex(Math.max(0, savedIndex));
+        setShowResults(
+          data.settings.started &&
+            new URL(window.location.href).searchParams.get("view") === "results",
+        );
       })
       .catch((cause) => {
         if (active) setError(cause.message);
@@ -655,9 +661,11 @@ export default function PracticeClient({
       });
       setSnapshot(data.snapshot);
       setIndex(nextIndex);
+      setShowResults(false);
       setGeneration((value) => value + 1);
       const url = new URL(window.location.href);
       url.searchParams.set("question", key);
+      url.searchParams.delete("view");
       window.history.replaceState(null, "", url);
       setTimeout(() => document.getElementById("active-question")?.focus(), 0);
     } catch (cause) {
@@ -681,6 +689,34 @@ export default function PracticeClient({
       setBusy(false);
     }
   }
+  async function finish() {
+    if (busy || childBusy) return;
+    setBusy(true);
+    setError("");
+    try {
+      // Fetch saved grades again so the last submission is included in the mark.
+      await refresh();
+      setShowResults(true);
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", "results");
+      url.searchParams.set("question", questions[index].sourceKey);
+      window.history.replaceState(null, "", url);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+      setChildBusy(false);
+    }
+  }
+  function reviewQuestions() {
+    setShowResults(false);
+    setReviewOnly(false);
+    setChildBusy(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("view");
+    window.history.replaceState(null, "", url);
+    setTimeout(() => document.getElementById("active-question")?.focus(), 0);
+  }
   async function reset() {
     setBusy(true);
     setGeneration((value) => value + 1);
@@ -689,10 +725,12 @@ export default function PracticeClient({
       await refresh();
       setIndex(0);
       setReviewOnly(false);
+      setShowResults(false);
       setConfirmReset(false);
       setError("");
       const url = new URL(window.location.href);
       url.searchParams.delete("question");
+      url.searchParams.delete("view");
       window.history.replaceState(null, "", url);
     } catch (cause) {
       setError((cause as Error).message);
@@ -721,6 +759,32 @@ export default function PracticeClient({
     ? questions.filter((question) => snapshot.mistakeKeys.includes(question.sourceKey))
     : questions;
   const current = questions[index];
+  const visibleIndex = visibleQuestions.findIndex((question) => question.id === current.id);
+  const isLastQuestion = visibleIndex >= visibleQuestions.length - 1;
+  if (showResults)
+    return (
+      <>
+        {error && (
+          <p className="tutor-error" role="alert">
+            {error}
+          </p>
+        )}
+        <PracticeResults
+          result={snapshot.result}
+          disabled={busy}
+          onReview={reviewQuestions}
+          onUnanswered={() => {
+            setReviewOnly(false);
+            const key = snapshot.result.unansweredKeys[0];
+            if (key) void navigate(key);
+          }}
+        />
+        <p className="disclaimer">
+          Independent practice content; not official live-exam content. Questions flagged for source
+          review are excluded from the mark.
+        </p>
+      </>
+    );
   return (
     <>
       {error && (
@@ -776,6 +840,11 @@ export default function PracticeClient({
           </ul>
         </details>
         <div className="progress-actions">
+          {snapshot.settings.started && (snapshot.result.unanswered === 0 || remaining === 0) && (
+            <button className="button" disabled={busy || childBusy} onClick={() => void finish()}>
+              View results
+            </button>
+          )}
           <button
             className="button secondary"
             disabled={
@@ -916,22 +985,14 @@ export default function PracticeClient({
             </button>
             <button
               className="button"
-              disabled={
-                busy ||
-                childBusy ||
-                visibleQuestions.findIndex((question) => question.id === current.id) >=
-                  visibleQuestions.length - 1 ||
-                !visibleQuestions.length
-              }
+              disabled={busy || childBusy}
               onClick={() =>
-                void navigate(
-                  visibleQuestions[
-                    visibleQuestions.findIndex((question) => question.id === current.id) + 1
-                  ].sourceKey,
-                )
+                isLastQuestion || !visibleQuestions.length
+                  ? void finish()
+                  : void navigate(visibleQuestions[visibleIndex + 1].sourceKey)
               }
             >
-              Next →
+              {isLastQuestion || !visibleQuestions.length ? "Finish and view results" : "Next →"}
             </button>
           </nav>
         </>
