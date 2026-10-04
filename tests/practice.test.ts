@@ -231,6 +231,8 @@ test("restart clears all question formats and exposure, resets the timer, and st
   assert.ok(snapshot.settings.deadline! <= Date.now() + 120 * 60_000);
   assert.equal(snapshot.progress.attempted, 0);
   assert.equal(snapshot.result.correct, 0);
+  assert.equal(snapshot.result.score.current, null);
+  assert.equal(snapshot.result.score.fullBank, 100);
   assert.equal(snapshot.result.unanswered, 63);
   assert.deepEqual(snapshot.mistakeKeys, []);
   for (const question of [single, multiple, matching]) {
@@ -939,6 +941,51 @@ function wrongSelection(question: import("../lib/types").Question) {
   ];
 }
 
+test("submission responses update score immediately for every format without leaking hidden answers", async () => {
+  const id = fresh();
+  for (const [index, question] of [single, multiple, matching].entries()) {
+    const draft = practice.saveDraft(
+      id,
+      question.id,
+      index === 1 ? wrongSelection(question) : bank.getAnswer(question.id)!.correctKeys,
+      "",
+      0,
+    );
+    const request = () =>
+      new Request("http://localhost/api/practice", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost",
+          cookie: `ai_tutor_session=${id}`,
+        },
+        body: JSON.stringify({
+          action: "submit",
+          certification: "architect-professional",
+          questionId: question.id,
+          requestId: `live-score-${index}`,
+          revision: draft.revision,
+        }),
+      });
+    const response = await route.POST(request());
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.snapshot.result.attempted, index + 1);
+    assert.equal(body.snapshot.result.score.current, [1000, 550, 700][index]);
+    assert.equal(body.snapshot.result.score.fullBank, [114, 114, 128][index]);
+    assert.ok(!JSON.stringify(body.snapshot).includes('"correctKeys"'));
+    assert.ok(!JSON.stringify(body.snapshot).includes('"rationale"'));
+    const duplicate = await (await route.POST(request())).json();
+    assert.deepEqual(duplicate.snapshot.result, body.snapshot.result);
+    const refresh = await route.GET(
+      new Request("http://localhost/api/practice?certification=architect-professional", {
+        headers: { cookie: `ai_tutor_session=${id}` },
+      }),
+    );
+    assert.deepEqual((await refresh.json()).result, body.snapshot.result);
+  }
+});
+
 test("final marks include every question format across all four complete certifications", () => {
   const id = fresh();
   for (const certification of bank.getCertifications()) {
@@ -965,6 +1012,11 @@ test("final marks include every question format across all four complete certifi
     assert.deepEqual(result.unansweredKeys, []);
     assert.equal(result.percentage, Math.round((expectedCorrect / scorable.length) * 100));
     assert.equal(result.excluded, certification.slug === "developer-foundations" ? 1 : 0);
+    assert.equal(
+      result.score.current,
+      Math.floor((100 * scorable.length + 900 * expectedCorrect) / scorable.length),
+    );
+    assert.equal(result.score.current, result.score.fullBank);
     assert.equal(
       result.domains.reduce((sum, domain) => sum + domain.correct, 0),
       expectedCorrect,
@@ -1008,6 +1060,8 @@ test("partial results leave drafts and reveals unscored and retain first marks a
   assert.ok(!result.unansweredKeys.includes(single.sourceKey));
   assert.equal(result.independent, 1);
   assert.equal(result.review, 0); // Later retries are not added to the final mark.
+  assert.equal(result.score.current, 100);
+  assert.equal(result.score.accuracy, 0);
   assert.deepEqual(practice.practiceSnapshot(id, "architect-professional").result, result);
   sessions.resetSession(id);
   const replacement = sessions.ensureSession(id);
@@ -1032,6 +1086,8 @@ test("final practice marks include assisted and previously revealed first submis
   assert.equal(result.review, 1);
   assert.equal(result.independent, 0);
   assert.equal(result.percentage, 3);
+  assert.equal(result.score.current, 1000);
+  assert.equal(result.score.fullBank, 128);
 });
 
 test("partial streamed hints count as assistance but cancellation saves no transcript", async () => {

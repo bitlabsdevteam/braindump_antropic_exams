@@ -4,6 +4,7 @@ test("the last question offers completion instead of a disabled Next button", as
   await page.goto("/exams/architect-professional/practice?question=professional-7.4");
   await page.getByRole("button", { name: "Start practice", exact: true }).click();
   await expect(page.locator("#question-nav")).toHaveValue("professional-7.4");
+  await expect(page.getByTestId("current-score")).toHaveText("— / 1,000");
   await expect(
     page.getByRole("button", { name: "Finish and view results", exact: true }),
   ).toBeEnabled();
@@ -127,6 +128,9 @@ for (const [slug, total] of [
     await selectCorrect(page, last);
     await page.getByRole("button", { name: "Submit and reveal", exact: true }).click();
     await expect(page.getByRole("region", { name: "Source answer", exact: true })).toBeVisible();
+    const expectedScore = Math.floor((100 * total + 900 * (total - 1)) / total);
+    await expect(page.getByTestId("current-score")).toHaveText(`${expectedScore} / 1,000`);
+    await expect(page.getByTestId("question-score")).toContainText(`${expectedScore} / 1,000`);
     await page.getByRole("button", { name: "Finish and view results", exact: true }).click();
     await expect(page.getByRole("complementary", { name: "Chiikawa", exact: true })).toHaveCount(0);
     await expect(
@@ -145,6 +149,8 @@ for (const [slug, total] of [
       ).toBeVisible();
     await page.reload();
     await expect(page.getByTestId("final-mark")).toHaveText(`${total - 1} / ${total}`);
+    await expect(page.getByTestId("current-score")).toHaveText(`${expectedScore} / 1,000`);
+    await expect(page.getByTestId("full-bank-score")).toHaveText(`${expectedScore} / 1,000`);
     await page.getByRole("button", { name: "Review questions", exact: true }).click();
     await expect(page.locator("#question-nav")).toHaveValue(last.sourceKey);
     await page.getByRole("button", { name: "View results", exact: true }).click();

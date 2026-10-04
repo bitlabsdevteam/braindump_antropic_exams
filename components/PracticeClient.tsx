@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import PracticeResults from "./PracticeResults";
+import PracticeScore from "./PracticeScore";
 import RestartExam from "./RestartExam";
 import { activityLabel, type TutorActivity, type TutorText } from "./TutorResponse";
 import ChiikawaPanel from "./ChiikawaPanel";
@@ -11,6 +12,7 @@ import type { Answer, Question } from "../lib/types";
 import type {
   DraftState,
   PracticeSnapshot,
+  PracticeResult,
   Recommendation,
   TutorIntent,
 } from "../lib/practice-types";
@@ -48,6 +50,8 @@ type CoachProps = {
   initial: DraftState;
   certification: string;
   onRefresh: () => Promise<void>;
+  onSnapshot: (snapshot: PracticeSnapshot) => void;
+  practiceResult: PracticeResult;
   onNavigate: (key: string) => void;
   onBusy: (busy: boolean) => void;
 };
@@ -57,6 +61,8 @@ function QuestionCoach({
   initial,
   certification,
   onRefresh,
+  onSnapshot,
+  practiceResult,
   onNavigate,
   onBusy,
 }: CoachProps) {
@@ -191,6 +197,7 @@ function QuestionCoach({
         if (action === "submit") submission.current ??= crypto.randomUUID();
         const data = await api<{
           state: DraftState;
+          snapshot: PracticeSnapshot;
           answer?: Answer;
           recommendations?: Recommendation[];
         }>("/api/practice", {
@@ -201,6 +208,7 @@ function QuestionCoach({
           revision: stateRef.current.revision,
         });
         if (!alive.current) return;
+        onSnapshot(data.snapshot);
         setServerState(data.state);
         setSelected(data.state.selectedKeys);
         setReasoning(data.state.reasoning);
@@ -225,7 +233,7 @@ function QuestionCoach({
         setAnswer(null);
         setServerState(data.state);
       }
-      await onRefresh();
+      if (action !== "submit" && action !== "retry") await onRefresh();
     } catch (cause) {
       if (alive.current) setError((cause as Error).message);
     } finally {
@@ -525,6 +533,14 @@ function QuestionCoach({
                   ? `${state.result.correct ? "Correct" : "Incorrect"} · ${state.result.kind} attempt`
                   : "Source answer · unscored reveal"}
             </h3>
+            {state.result && practiceResult.score.current !== null && (
+              <p className="question-score" data-testid="question-score">
+                Current practice estimate: <strong>{practiceResult.score.current} / 1,000</strong> ·{" "}
+                {practiceResult.correct} correct of {practiceResult.attempted} submitted. 720
+                reference · {practiceResult.unanswered ? "provisional" : "practice complete"}.
+                {state.result.kind === "review" && " Retries keep the first submitted mark."}
+              </p>
+            )}
             <div className="answer-list">
               {answer.correctKeys.map((key) => (
                 <span className="answer-chip" key={key}>
@@ -828,6 +844,7 @@ export default function PracticeClient({
         </p>
       )}
       <section className="learning-summary" aria-label="Learning progress">
+        <PracticeScore result={snapshot.result} />
         <div className="score-strip">
           <div>
             <span className="score-label">Questions attempted</span>
@@ -1022,6 +1039,8 @@ export default function PracticeClient({
                 initial={snapshot.states[current.sourceKey] ?? emptyState()}
                 certification={certification}
                 onRefresh={refresh}
+                onSnapshot={setSnapshot}
+                practiceResult={snapshot.result}
                 onNavigate={(key) => {
                   setReviewOnly(false);
                   void navigate(key);

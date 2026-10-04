@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { PracticeResult } from "../lib/practice-types";
+import PracticeScore from "./PracticeScore";
 
 export default function PracticeResults({
   result,
@@ -35,6 +36,7 @@ export default function PracticeResults({
           Review questions
         </button>
       </div>
+      <PracticeScore result={result} />
       <div className="results-overview">
         <div className="results-total">
           <span className="score-label">Final mark</span>

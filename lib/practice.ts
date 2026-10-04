@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { calculatePracticeScore } from "./scoring";
 import {
   getAnswer,
   getCertification,
@@ -403,6 +404,7 @@ export function practiceSnapshot(id: string, slug: string): PracticeSnapshot {
   return {
     states,
     result: {
+      score: calculatePracticeScore(correct, firstScorable.length, scorable.length),
       correct,
       total: scorable.length,
       attempted: firstScorable.length,

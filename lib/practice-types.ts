@@ -1,4 +1,5 @@
 import type { Question } from "./types";
+import type { PracticeScore } from "./scoring";
 
 export type AttemptKind = "independent" | "assisted" | "review";
 export type TutorIntent = "hint" | "concept" | "review" | "follow_up";
@@ -20,6 +21,7 @@ export type DomainProgress = {
   correct: number;
 };
 export type PracticeResult = {
+  score: PracticeScore;
   correct: number;
   total: number;
   attempted: number;
