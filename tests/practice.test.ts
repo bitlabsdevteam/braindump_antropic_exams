@@ -1220,3 +1220,113 @@ test("server SSE reports safe terminal errors without provider details", async (
   assert.ok(!text.includes("private provider payload"));
   assert.equal(finished, true);
 });
+
+test("confidence is optional, validated, persisted, and never changes the mark", () => {
+  const id = fresh();
+  const state = saveCorrect(id);
+  assert.throws(
+    () => practice.submitAttempt(id, single.id, "confidence-bad", state.revision, "certain"),
+    /confidence/i,
+  );
+  const submitted = practice.submitAttempt(id, single.id, "confidence-ok", state.revision, "sure");
+  assert.deepEqual(submitted.state.result, {
+    correct: true,
+    kind: "independent",
+    confidence: "sure",
+  });
+  assert.equal(practice.getState(id, single.id).result?.confidence, "sure");
+  const columns = sessions.sessionDatabase().prepare("PRAGMA table_info(attempts)").all() as {
+    name: string;
+  }[];
+  assert.ok(columns.some((column) => column.name === "confidence"));
+});
+
+const withAids = (type: string) => {
+  const bank2 = bank.getCertifications().flatMap((c) => bank.getQuestions(c.slug));
+  return bank2.find(
+    (question) => question.type === type && bank.getStaticHints(question.id).length > 0,
+  )!;
+};
+
+test("study aids exist for each question type and load idempotently", () => {
+  for (const type of ["single_choice", "multiple_response", "scenario_matching"]) {
+    const question = withAids(type);
+    assert.ok(question, `sample aid for ${type}`);
+    const study = bank.getAnswer(question.id)!.study!;
+    assert.ok(study.concept && Object.keys(study.optionNotes).length);
+    for (const key of Object.keys(study.optionNotes))
+      assert.ok(question.options.some((option) => option.key === key));
+  }
+});
+
+test("pre-reveal hints never expose the answer key, option text, or study notes", () => {
+  for (const certification of bank.getCertifications())
+    for (const question of bank.getQuestions(certification.slug)) {
+      const hints = bank.getStaticHints(question.id);
+      if (!hints.length) continue;
+      const answer = bank.getAnswer(question.id)!;
+      const text = hints.join(" ").toLowerCase();
+      assert.doesNotMatch(text, /\b(option|answer|choice)\s+[a-e]\b/i, question.sourceKey);
+      for (const key of answer.correctKeys) {
+        const optionKey = key.split(":").pop()!;
+        const option = question.options.find((item) => item.key === optionKey)!;
+        assert.ok(!text.includes(option.text.toLowerCase()), `${question.sourceKey} quotes ${key}`);
+      }
+      assert.ok(!text.includes(answer.rationale.toLowerCase()), question.sourceKey);
+      // Public question queries must not carry aids at all.
+      assert.equal(JSON.stringify(question).includes(hints[0]), false);
+    }
+});
+
+test("static hints are ordered, mark the attempt assisted, and stop at reveal", () => {
+  const id = fresh();
+  const question = withAids("single_choice");
+  assert.throws(() => practice.openStaticHint(id, question.id, 2), /earlier hints/);
+  assert.throws(() => practice.openStaticHint(id, question.id, 9), /Invalid hint/);
+  const first = practice.openStaticHint(id, question.id, 1);
+  assert.equal(first.hints.length, 1);
+  assert.equal(first.state.staticHints.used, 1);
+  assert.equal(first.state.hintCount, 0, "tutor hint stage is untouched");
+  assert.equal(practice.openStaticHint(id, question.id, 1).state.staticHints.used, 1);
+  assert.equal(practice.openStaticHint(id, question.id, 2).hints.length, 2);
+  const state = saveCorrect(id, question);
+  const submitted = practice.submitAttempt(id, question.id, "hinted-submit", state.revision);
+  assert.equal(submitted.state.result?.kind, "assisted");
+  assert.throws(() => practice.openStaticHint(id, question.id, 3), /before you answer/);
+  const retried = practice.retryQuestion(id, question.id, submitted.state.revision);
+  assert.equal(retried.staticHints.used, 0);
+});
+
+test("static hints are unavailable for questions without aids", () => {
+  const id = fresh();
+  const bare = bank
+    .getQuestions("architect-professional")
+    .find((question) => !bank.getStaticHints(question.id).length && !question.reviewRequired)!;
+  assert.throws(() => practice.openStaticHint(id, bare.id, 1), /No hints/);
+  assert.equal(bank.getAnswer(bare.id)!.study, undefined);
+});
+
+test("results count confident misses and the tutor never receives draft study notes", () => {
+  const id = fresh();
+  const question = withAids("single_choice");
+  const wrongKey = question.options.find(
+    (option) => !bank.getAnswer(question.id)!.correctKeys.includes(option.key),
+  )!.key;
+  const draft = practice.saveDraft(
+    id,
+    question.id,
+    [wrongKey],
+    "",
+    practice.getState(id, question.id).revision,
+  );
+  practice.submitAttempt(id, question.id, "sure-but-wrong", draft.revision, "sure");
+  assert.equal(practice.practiceSnapshot(id, "associate-foundations").result.confidentWrong, 1);
+  const result = tools.runTool(
+    "get_revealed_answer",
+    {},
+    { sessionId: id, context: { question, certificationSlug: "associate-foundations" } as never },
+  );
+  assert.ok(result);
+  assert.equal("study" in (result as object), false);
+  assert.ok((result as { rationale: string }).rationale);
+});

@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import type { Answer, Certification, Question } from "./types";
+import type { Answer, Certification, Question, StudyNotes } from "./types";
 
 const dataDir = path.join(process.cwd(), "data");
 const dbPath = process.env.EXAMS_DB_PATH || path.join(dataDir, "exams.db");
@@ -90,11 +90,38 @@ export function getAnswer(questionId: number): Answer | undefined {
     .get(questionId) as
     { correctKeys?: string; rationale: string; reviewNote: string | null } | undefined;
   if (!row) return undefined;
+  const study = getStudyNotes(questionId);
   return {
     correctKeys: JSON.parse(row.correctKeys ?? "[]") as string[],
     rationale: row.rationale,
     reviewNote: row.reviewNote,
+    ...(study ? { study } : {}),
   };
+}
+
+// Reveal-gated: only getAnswer may expose these, never the public question queries.
+function getStudyNotes(questionId: number): StudyNotes | undefined {
+  const row = getDb()
+    .prepare(
+      "SELECT status, concept, option_notes as optionNotes, mnemonic FROM question_aids WHERE question_id = ?",
+    )
+    .get(questionId) as
+    | {
+        status: StudyNotes["status"];
+        concept: string;
+        optionNotes: string;
+        mnemonic: string | null;
+      }
+    | undefined;
+  return row ? { ...row, optionNotes: JSON.parse(row.optionNotes) } : undefined;
+}
+
+/** Pre-reveal nudges. Served through a server route that records the assistance. */
+export function getStaticHints(questionId: number): string[] {
+  const row = getDb()
+    .prepare("SELECT hints FROM question_aids WHERE question_id = ?")
+    .get(questionId) as { hints: string } | undefined;
+  return row ? (JSON.parse(row.hints) as string[]) : [];
 }
 
 export function getDomains(slug: string) {

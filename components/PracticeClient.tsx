@@ -10,6 +10,7 @@ import { readTutorStream } from "../lib/read-tutor-stream";
 import type { TutorStreamReply } from "../lib/tutor-stream-types";
 import type { Answer, Question } from "../lib/types";
 import type {
+  Confidence,
   DraftState,
   PracticeSnapshot,
   PracticeResult,
@@ -23,11 +24,31 @@ const emptyState = (): DraftState => ({
   generation: 0,
   revision: 0,
   hintCount: 0,
+  staticHints: { used: 0, total: 0 },
   submitted: false,
   exposed: false,
   visible: false,
   result: null,
 });
+const confidenceOptions: { value: Confidence; label: string }[] = [
+  { value: "guess", label: "Guess" },
+  { value: "unsure", label: "Unsure" },
+  { value: "sure", label: "Sure" },
+];
+// Wording carries the meaning, so calibration never relies on colour alone.
+function calibrationNote(confidence: Confidence, correct: boolean) {
+  if (confidence === "sure" && !correct)
+    return "You were sure but this was incorrect. This may be a misconception worth revisiting.";
+  if (confidence === "guess" && correct)
+    return "You guessed and got it right. Check the rationale so it is knowledge, not luck.";
+  if (confidence === "sure")
+    return "You were sure and correct. Your confidence matched the result.";
+  if (confidence === "guess")
+    return "You guessed and it was incorrect. Use the rationale to build the idea.";
+  return correct
+    ? "You were unsure but correct. Review the rationale to firm it up."
+    : "You were unsure and incorrect. Review the rationale before retrying.";
+}
 async function api<T>(
   url: string,
   body?: unknown,
@@ -72,6 +93,8 @@ function QuestionCoach({
   const [selected, setSelected] = useState(initial.selectedKeys);
   const [reasoning, setReasoning] = useState(initial.reasoning);
   const [answer, setAnswer] = useState<Answer | null>(null);
+  const [hints, setHints] = useState<string[]>([]);
+  const [confidence, setConfidence] = useState<Confidence | "">(initial.result?.confidence ?? "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(initial.visible);
   const [saving, setSaving] = useState(false);
@@ -121,10 +144,21 @@ function QuestionCoach({
           );
           if (alive.current) setServerState(data.state);
         }
-        const data = await api<{ recommendations: Recommendation[] }>(
+        const data = await api<{ recommendations: Recommendation[]; state: DraftState }>(
           `/api/practice?certification=${encodeURIComponent(certification)}&questionId=${question.id}`,
         );
-        if (alive.current) setRelated(data.recommendations);
+        if (alive.current) {
+          setRelated(data.recommendations);
+          // A question with no saved progress starts from emptyState(); learn its hint count.
+          setServerState({ ...stateRef.current, staticHints: data.state.staticHints });
+        }
+        // Re-opening an already-used stage is free and idempotent; it restores the text only.
+        if (data.state.staticHints.used > 0 && !data.state.submitted && !data.state.visible) {
+          const restored = await api<{ hints: string[] }>(`/api/questions/${question.id}/hint`, {
+            stage: data.state.staticHints.used,
+          });
+          if (alive.current) setHints(restored.hints);
+        }
       } catch (cause) {
         if (alive.current) setError((cause as Error).message);
       } finally {
@@ -206,6 +240,7 @@ function QuestionCoach({
           questionId: question.id,
           requestId: submission.current,
           revision: stateRef.current.revision,
+          ...(action === "submit" && confidence ? { confidence } : {}),
         });
         if (!alive.current) return;
         onSnapshot(data.snapshot);
@@ -214,7 +249,11 @@ function QuestionCoach({
         setReasoning(data.state.reasoning);
         setAnswer(data.answer ?? null);
         if (data.recommendations) setRelated(data.recommendations);
-        if (action === "retry") submission.current = null;
+        if (action === "retry") {
+          submission.current = null;
+          setConfidence("");
+          setHints([]);
+        }
       } else if (action === "reveal") {
         const data = await api<Answer>(`/api/questions/${question.id}/answer`, undefined, "POST");
         const updated = await api<{ state: DraftState }>(
@@ -234,6 +273,25 @@ function QuestionCoach({
         setServerState(data.state);
       }
       if (action !== "submit" && action !== "retry") await onRefresh();
+    } catch (cause) {
+      if (alive.current) setError((cause as Error).message);
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  }
+  async function openHint() {
+    setBusy(true);
+    setError("");
+    try {
+      await queue.current;
+      const data = await api<{ hints: string[]; state: DraftState }>(
+        `/api/questions/${question.id}/hint`,
+        { stage: hints.length + 1 },
+      );
+      if (!alive.current) return;
+      setHints(data.hints);
+      setServerState(data.state);
+      await onRefresh();
     } catch (cause) {
       if (alive.current) setError((cause as Error).message);
     } finally {
@@ -469,6 +527,54 @@ function QuestionCoach({
                 : "Progress saved in this browser for 30 days"}
           </small>
         </div>
+        {state.staticHints.total > 0 &&
+          !state.submitted &&
+          !state.visible &&
+          !question.reviewRequired && (
+            <section className="study-hints" aria-label="Study hints">
+              {hints.length > 0 && (
+                <ol aria-live="polite">
+                  {hints.map((hint, index) => (
+                    <li key={index}>
+                      <strong>Hint {index + 1}.</strong> {hint}
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {hints.length < state.staticHints.total ? (
+                <button
+                  className="button secondary"
+                  disabled={busy || saving}
+                  onClick={() => void openHint()}
+                >
+                  {`Show hint ${hints.length + 1} of ${state.staticHints.total}`}
+                </button>
+              ) : (
+                <p className="question-help">All hints shown.</p>
+              )}
+              <small>
+                Using a hint marks this attempt as assisted. It never changes the answer.
+              </small>
+            </section>
+          )}
+        {!state.submitted && !question.reviewRequired && (
+          <fieldset className="confidence-input" disabled={locked}>
+            <legend>
+              How sure are you? <span>(optional, never changes your mark)</span>
+            </legend>
+            {confidenceOptions.map((option) => (
+              <label key={option.value}>
+                <input
+                  type="radio"
+                  name={`confidence-${question.id}`}
+                  checked={confidence === option.value}
+                  onChange={() => setConfidence(option.value)}
+                />
+                {option.label}
+              </label>
+            ))}
+          </fieldset>
+        )}
         {state.exposed && !state.submitted && !question.reviewRequired && (
           <p className="question-help">
             You have seen this source answer. Future attempts count as review practice.
@@ -541,6 +647,11 @@ function QuestionCoach({
                 {state.result.kind === "review" && " Retries keep the first submitted mark."}
               </p>
             )}
+            {state.result?.confidence && (
+              <p className="question-help" data-testid="calibration">
+                {calibrationNote(state.result.confidence, state.result.correct)}
+              </p>
+            )}
             <div className="answer-list">
               {answer.correctKeys.map((key) => (
                 <span className="answer-chip" key={key}>
@@ -550,6 +661,42 @@ function QuestionCoach({
             </div>
             <p>{answer.rationale}</p>
             {answer.reviewNote && <p className="source-review">{answer.reviewNote}</p>}
+            {answer.study && (
+              <div className="study-notes" data-testid="study-notes">
+                <h4>
+                  Study notes{" "}
+                  <span>
+                    ({answer.study.status === "reviewed" ? "reviewed" : "draft, not yet reviewed"};
+                    not source text)
+                  </span>
+                </h4>
+                <p>
+                  <strong>Concept:</strong> {answer.study.concept}
+                </p>
+                {answer.study.mnemonic && (
+                  <p>
+                    <strong>Remember it:</strong> {answer.study.mnemonic}
+                  </p>
+                )}
+                <ul>
+                  {question.options
+                    .filter((option) => answer.study?.optionNotes[option.key])
+                    .map((option) => (
+                      <li key={option.key}>
+                        <strong>
+                          {option.key}
+                          {question.type !== "scenario_matching" &&
+                          answer.correctKeys.includes(option.key)
+                            ? " (in the source answer)"
+                            : ""}
+                          :
+                        </strong>{" "}
+                        {answer.study?.optionNotes[option.key]}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
           </section>
         )}
         <section className="related-practice">
@@ -635,7 +782,7 @@ export default function PracticeClient({
   const [busy, setBusy] = useState(false);
   const [childBusy, setChildBusy] = useState(false);
   const [generation, setGeneration] = useState(0);
-  const [reviewOnly, setReviewOnly] = useState(false);
+  const [reviewFilter, setReviewFilter] = useState<"mistakes" | "due" | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const onBusy = useCallback((value: boolean) => setChildBusy(value), []);
@@ -734,7 +881,7 @@ export default function PracticeClient({
   }
   function reviewQuestions() {
     setShowResults(false);
-    setReviewOnly(false);
+    setReviewFilter(null);
     setChildBusy(false);
     const url = new URL(window.location.href);
     url.searchParams.delete("view");
@@ -748,7 +895,7 @@ export default function PracticeClient({
       await api("/api/practice", undefined, "DELETE");
       await refresh();
       setIndex(0);
-      setReviewOnly(false);
+      setReviewFilter(null);
       setShowResults(false);
       setConfirmReset(false);
       setError("");
@@ -774,7 +921,7 @@ export default function PracticeClient({
       setNow(Date.now());
       setIndex(0);
       setGeneration((value) => value + 1);
-      setReviewOnly(false);
+      setReviewFilter(null);
       setShowResults(false);
       setConfirmReset(false);
       const url = new URL(window.location.href);
@@ -803,8 +950,10 @@ export default function PracticeClient({
   const remaining = snapshot.settings.deadline
     ? Math.max(0, Math.ceil((snapshot.settings.deadline - now) / 1000))
     : null;
+  const reviewOnly = reviewFilter !== null;
+  const reviewKeys = reviewFilter === "due" ? snapshot.dueKeys : snapshot.mistakeKeys;
   const visibleQuestions = reviewOnly
-    ? questions.filter((question) => snapshot.mistakeKeys.includes(question.sourceKey))
+    ? questions.filter((question) => reviewKeys.includes(question.sourceKey))
     : questions;
   const current = questions[index];
   const visibleIndex = visibleQuestions.findIndex((question) => question.id === current.id);
@@ -822,7 +971,7 @@ export default function PracticeClient({
           disabled={busy}
           onReview={reviewQuestions}
           onUnanswered={() => {
-            setReviewOnly(false);
+            setReviewFilter(null);
             const key = snapshot.result.unansweredKeys[0];
             if (key) void navigate(key);
           }}
@@ -906,11 +1055,25 @@ export default function PracticeClient({
               busy || childBusy || !snapshot.settings.started || !snapshot.mistakeKeys.length
             }
             onClick={() => {
-              setReviewOnly(!reviewOnly);
-              if (!reviewOnly) void navigate(snapshot.mistakeKeys[0]);
+              const next = reviewFilter === "mistakes" ? null : "mistakes";
+              setReviewFilter(next);
+              if (next) void navigate(snapshot.mistakeKeys[0]);
             }}
           >
-            {reviewOnly ? "All questions" : `Review mistakes (${snapshot.mistakeKeys.length})`}
+            {reviewFilter === "mistakes"
+              ? "All questions"
+              : `Review mistakes (${snapshot.mistakeKeys.length})`}
+          </button>
+          <button
+            className="button secondary"
+            disabled={busy || childBusy || !snapshot.settings.started || !snapshot.dueKeys.length}
+            onClick={() => {
+              const next = reviewFilter === "due" ? null : "due";
+              setReviewFilter(next);
+              if (next) void navigate(snapshot.dueKeys[0]);
+            }}
+          >
+            {reviewFilter === "due" ? "All questions" : `Due today (${snapshot.dueKeys.length})`}
           </button>
           <button
             className="text-button"
@@ -995,7 +1158,7 @@ export default function PracticeClient({
                     (question) => question.domainNumber === Number(event.target.value),
                   );
                   if (first) {
-                    setReviewOnly(false);
+                    setReviewFilter(null);
                     void navigate(first.sourceKey);
                   }
                 }}
@@ -1029,7 +1192,9 @@ export default function PracticeClient({
           </nav>
           {reviewOnly && !visibleQuestions.length ? (
             <div className="empty-state">
-              No unresolved mistakes remain. Switch to all questions to continue.
+              {reviewFilter === "due"
+                ? "Nothing is due for review right now. Switch to all questions to continue."
+                : "No unresolved mistakes remain. Switch to all questions to continue."}
             </div>
           ) : (
             !busy && (
@@ -1042,7 +1207,7 @@ export default function PracticeClient({
                 onSnapshot={setSnapshot}
                 practiceResult={snapshot.result}
                 onNavigate={(key) => {
-                  setReviewOnly(false);
+                  setReviewFilter(null);
                   void navigate(key);
                 }}
                 onBusy={onBusy}

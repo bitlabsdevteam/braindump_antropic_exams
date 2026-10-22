@@ -43,3 +43,12 @@ Tests cover scale endpoints, the 720 boundary, invalid counts, all bank sizes, f
 - Reload preserved 700 and the selected question. Restart returned to question one with no current estimate and a full-bank baseline of 100.
 - Desktop and 390px mobile screenshots were inspected; the mobile document and viewport both measured 390px wide. Captures are local artifacts at `output/playwright/live-score-desktop.png` and `output/playwright/live-score-mobile.png`.
 - The existing Developer source conflict remains flagged and excluded. Manual development-console output contained only the existing missing-favicon 404; no scoring errors occurred.
+
+## Learning aids never change the mark
+
+Self-rated confidence, spaced-review scheduling, and study notes are coaching only. Confidence is
+stored beside each attempt but is ignored by `calculatePracticeScore`. Opening a static hint marks
+the attempt `assisted`, exactly as a tutor hint does, and it never alters the one-mark-per-question
+first-attempt rule. "Due today" is derived from attempt history (Leitner intervals of 1, 2, 4, and 7
+days) and is cleared with the attempts when an exam is restarted. Study notes are labelled drafts
+until a person has reviewed them against the source PDF.

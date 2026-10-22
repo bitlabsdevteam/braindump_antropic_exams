@@ -76,6 +76,13 @@ export default function PracticeResults({
         {result.review} after seeing the source answer. This is a practice score, not an official
         exam result.
       </p>
+      {result.confidentWrong > 0 && (
+        <p className="question-help" data-testid="confident-wrong">
+          You were sure but incorrect on {result.confidentWrong}{" "}
+          {result.confidentWrong === 1 ? "question" : "questions"}. These are the likeliest
+          misconceptions, so they are worth revisiting.
+        </p>
+      )}
       <div className="category-results">
         <h3>Marks by domain</h3>
         <ul className="result-domain-list">

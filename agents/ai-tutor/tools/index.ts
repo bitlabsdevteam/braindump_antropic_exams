@@ -44,7 +44,9 @@ export function runTool(
       throw new ToolPermissionError("The answer has not been revealed in this session.");
     const answer = getAnswer(context.question.id);
     if (!answer) throw new Error("Answer not found");
-    return answer;
+    // Draft study notes are not source text; the tutor must only cite the source rationale.
+    const { study: _study, ...source } = answer;
+    return source;
   }
   if (name === "get_session_learning_context")
     return {

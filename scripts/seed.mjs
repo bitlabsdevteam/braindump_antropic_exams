@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, cert
 CREATE TABLE IF NOT EXISTS options (id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE, option_key TEXT NOT NULL, text TEXT NOT NULL, ordinal INTEGER NOT NULL, UNIQUE(question_id, option_key));
 CREATE TABLE IF NOT EXISTS match_items (id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE, item_key TEXT NOT NULL, text TEXT NOT NULL, ordinal INTEGER NOT NULL, UNIQUE(question_id, item_key));
 CREATE TABLE IF NOT EXISTS answers (question_id INTEGER PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE, correct_keys TEXT NOT NULL, rationale TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS question_aids (question_id INTEGER PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('draft', 'reviewed')), concept TEXT NOT NULL, hints TEXT NOT NULL, option_notes TEXT NOT NULL, mnemonic TEXT);
 `;
 
 const definitions = {
@@ -378,6 +379,46 @@ const upsertMatch = db.prepare(
 const upsertAnswer = db.prepare(
   `INSERT INTO answers (question_id, correct_keys, rationale) VALUES (?, ?, ?) ON CONFLICT(question_id) DO UPDATE SET correct_keys=excluded.correct_keys, rationale=excluded.rationale`,
 );
+// Study aids are separate learner-facing coaching. They are validated against the parsed
+// bank and replaced wholesale, so a rerun can never duplicate or orphan rows.
+function loadAids() {
+  const dir = process.env.AIDS_DIR || path.join(root, "data", "aids");
+  const merged = new Map();
+  if (!fs.existsSync(dir)) return merged;
+  for (const file of fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .sort()) {
+    const content = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+    for (const [key, aid] of Object.entries(content.questions ?? {})) {
+      if (merged.has(key)) fail(`aids: duplicate entry for ${key} in ${file}`);
+      merged.set(key, { aid, file });
+    }
+  }
+  return merged;
+}
+function validateAid(key, aid, question) {
+  const where = `aids: ${key}`;
+  if (!question) fail(`${where} does not match any question in the source bank`);
+  if (question.reviewNote) fail(`${where} targets a question flagged for source review`);
+  if (!["draft", "reviewed"].includes(aid.status)) fail(`${where} has invalid status`);
+  if (typeof aid.concept !== "string" || !aid.concept.trim()) fail(`${where} needs a concept`);
+  if (
+    !Array.isArray(aid.hints) ||
+    aid.hints.length < 1 ||
+    aid.hints.length > 3 ||
+    aid.hints.some((hint) => typeof hint !== "string" || !hint.trim())
+  )
+    fail(`${where} needs 1-3 non-empty hints`);
+  const notes = aid.optionNotes ?? {};
+  const optionKeys = new Set(question.options.map((option) => option.key));
+  for (const [optionKey, note] of Object.entries(notes))
+    if (!optionKeys.has(optionKey) || typeof note !== "string" || !note.trim())
+      fail(`${where} has a note for unknown option ${optionKey}`);
+  if (aid.mnemonic != null && (typeof aid.mnemonic !== "string" || !aid.mnemonic.trim()))
+    fail(`${where} has an empty mnemonic`);
+}
+let aidsLoaded = 0;
 let inserted = 0;
 let updated = 0;
 let removedStaleChildren = 0;
@@ -467,6 +508,29 @@ const seed = db.transaction(() => {
       );
     }
   }
+  const aids = loadAids();
+  const byKey = new Map(
+    parsed.flatMap((exam) =>
+      exam.questions.map((question) => [`${exam.kind}-${question.sourceKey}`, question]),
+    ),
+  );
+  db.prepare("DELETE FROM question_aids").run();
+  const insertAid = db.prepare(
+    "INSERT INTO question_aids (question_id, status, concept, hints, option_notes, mnemonic) VALUES (?, ?, ?, ?, ?, ?)",
+  );
+  for (const [key, { aid }] of aids) {
+    validateAid(key, aid, byKey.get(key));
+    const row = db.prepare("SELECT id FROM questions WHERE source_key = ?").get(key);
+    insertAid.run(
+      row.id,
+      aid.status,
+      aid.concept,
+      JSON.stringify(aid.hints),
+      JSON.stringify(aid.optionNotes ?? {}),
+      aid.mnemonic ?? null,
+    );
+    aidsLoaded++;
+  }
   if (db.pragma("foreign_key_check").length) fail("foreign key integrity check failed");
 });
 try {
@@ -480,7 +544,7 @@ try {
       `Repaired ${removedStaleChildren} stale child records from previous extraction; validated PDF content retained and question IDs preserved.`,
     );
   console.log(
-    `Questions inserted: ${inserted}; updated: ${updated}; validation errors: 0; flagged source discrepancies: ${flagged.length}`,
+    `Questions inserted: ${inserted}; updated: ${updated}; validation errors: 0; flagged source discrepancies: ${flagged.length}; study aids: ${aidsLoaded}`,
   );
 } finally {
   db.close();

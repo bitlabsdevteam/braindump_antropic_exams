@@ -6,10 +6,19 @@ import {
   getCertificationForQuestion,
   getQuestion,
   getQuestions,
+  getStaticHints,
 } from "./db";
 import { hide, sessionDatabase, sessionExpires } from "../agents/ai-tutor/context/session";
 import type { Question } from "./types";
-import type { AttemptKind, DraftState, PracticeSnapshot, Recommendation } from "./practice-types";
+import { confidenceLevels } from "./practice-types";
+import { dueSourceKeys, type ScheduleAttempt } from "./review-schedule";
+import type {
+  AttemptKind,
+  Confidence,
+  DraftState,
+  PracticeSnapshot,
+  Recommendation,
+} from "./practice-types";
 
 export class PracticeError extends Error {
   constructor(
@@ -25,6 +34,7 @@ type StateRow = {
   generation: number;
   revision: number;
   hint_count: number;
+  static_hints: number;
   assisted: number;
   exposed: number;
   visible: number;
@@ -39,6 +49,7 @@ type AttemptRow = {
   created_at: number;
   generation: number;
   selected: string;
+  confidence: Confidence | null;
 };
 export function questionContext(id: number) {
   const question = getQuestion(id);
@@ -94,20 +105,28 @@ export function getState(id: string, questionId: number): DraftState {
     .get(id, question.sourceKey) as StateRow;
   const attempt = database
     .prepare(
-      "SELECT correct, kind FROM attempts WHERE session_id = ? AND source_key = ? AND generation = ?",
+      "SELECT correct, kind, confidence FROM attempts WHERE session_id = ? AND source_key = ? AND generation = ?",
     )
     .get(id, question.sourceKey, row.generation) as
-    { correct: number; kind: AttemptKind } | undefined;
+    { correct: number; kind: AttemptKind; confidence: Confidence | null } | undefined;
   return {
     selectedKeys: JSON.parse(row.draft),
     reasoning: row.reasoning,
     generation: row.generation,
     revision: row.revision,
     hintCount: row.hint_count,
+    staticHints: { used: row.static_hints, total: getStaticHints(questionId).length },
     submitted: Boolean(row.submitted),
     exposed: Boolean(row.exposed),
     visible: Boolean(row.visible),
-    result: attempt ? { correct: Boolean(attempt.correct), kind: attempt.kind } : null,
+    // `confidence` is only present when the learner rated it, so older results keep their shape.
+    result: attempt
+      ? {
+          correct: Boolean(attempt.correct),
+          kind: attempt.kind,
+          ...(attempt.confidence ? { confidence: attempt.confidence } : {}),
+        }
+      : null,
   };
 }
 function currentState(id: string, questionId: number, revision: unknown) {
@@ -164,7 +183,10 @@ export function submitAttempt(
   questionId: number,
   requestId: string,
   revision: unknown,
+  confidence?: unknown,
 ) {
+  if (confidence != null && !confidenceLevels.includes(confidence as Confidence))
+    throw new PracticeError("Invalid confidence rating");
   const { question, certification } = questionContext(questionId);
   const database = sessionDatabase();
   return database
@@ -198,7 +220,11 @@ export function submitAttempt(
       ).assisted;
       const kind: AttemptKind = state.exposed ? "review" : assisted ? "assisted" : "independent";
       database
-        .prepare("INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .prepare(
+          `INSERT INTO attempts(id, session_id, request_id, source_key, certification_slug, domain_name,
+      selected, correct, kind, hint_count, generation, created_at, confidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
         .run(
           crypto.randomUUID(),
           id,
@@ -212,6 +238,7 @@ export function submitAttempt(
           state.hintCount,
           state.generation,
           Date.now(),
+          (confidence as Confidence | null | undefined) ?? null,
         );
       database
         .prepare("UPDATE question_state SET submitted = 1 WHERE session_id = ? AND source_key = ?")
@@ -231,7 +258,7 @@ export function retryQuestion(id: string, questionId: number, revision: unknown)
       hide(id, questionId);
       sessionDatabase()
         .prepare(
-          "UPDATE question_state SET draft = '[]', reasoning = '', generation = generation + 1, hint_count = 0, assisted = 0, submitted = 0, updated_at = ? WHERE session_id = ? AND source_key = ?",
+          "UPDATE question_state SET draft = '[]', reasoning = '', generation = generation + 1, hint_count = 0, static_hints = 0, assisted = 0, submitted = 0, updated_at = ? WHERE session_id = ? AND source_key = ?",
         )
         .run(Date.now(), id, question.sourceKey);
       return getState(id, questionId);
@@ -254,6 +281,30 @@ export function recordAssistance(id: string, questionId: number, hint: boolean) 
       "UPDATE question_state SET assisted = 1, hint_count = hint_count + ? WHERE session_id = ? AND source_key = ? AND visible = 0 AND submitted = 0",
     )
     .run(Number(hint), id, question.sourceKey);
+}
+/**
+ * Opens the next static hint. Stages must be taken in order (re-reading an earlier stage is
+ * free), and any use marks the attempt assisted, exactly like the tutor's hints. Hints are
+ * refused once the answer is visible or submitted, so they can never replace the answer.
+ */
+export function openStaticHint(id: string, questionId: number, stage: unknown) {
+  const { question } = questionContext(questionId);
+  const hints = getStaticHints(questionId);
+  if (question.reviewRequired || !hints.length)
+    throw new PracticeError("No hints are available for this question.", 404);
+  if (!Number.isInteger(stage) || (stage as number) < 1 || (stage as number) > hints.length)
+    throw new PracticeError("Invalid hint stage");
+  const state = getState(id, questionId);
+  if (state.submitted || state.visible)
+    throw new PracticeError("Hints are only available before you answer.", 409);
+  if ((stage as number) > state.staticHints.used + 1)
+    throw new PracticeError("Open the earlier hints first.", 409);
+  sessionDatabase()
+    .prepare(
+      "UPDATE question_state SET static_hints = MAX(static_hints, ?), assisted = 1 WHERE session_id = ? AND source_key = ?",
+    )
+    .run(stage, id, question.sourceKey);
+  return { hints: hints.slice(0, stage as number), state: getState(id, questionId) };
 }
 export function setPracticeSettings(
   id: string,
@@ -319,7 +370,7 @@ export function restartExam(id: string, slug: string): PracticeSnapshot {
       database
         .prepare(
           `UPDATE question_state SET draft = '[]', reasoning = '',
-      generation = generation + 1, revision = revision + 1, hint_count = 0, assisted = 0,
+      generation = generation + 1, revision = revision + 1, hint_count = 0, static_hints = 0, assisted = 0,
       exposed = 0, visible = 0, submitted = 0, updated_at = ?
       WHERE session_id = ? AND certification_slug = ?`,
         )
@@ -380,10 +431,23 @@ export function practiceSnapshot(id: string, slug: string): PracticeSnapshot {
     .all(id, slug) as AttemptRow[];
   const first = new Map<string, AttemptRow>();
   const latest = new Map<string, AttemptRow>();
+  const history = new Map<string, ScheduleAttempt[]>();
   for (const attempt of attempts) {
     if (!first.has(attempt.source_key)) first.set(attempt.source_key, attempt);
     latest.set(attempt.source_key, attempt);
+    history.set(attempt.source_key, [
+      ...(history.get(attempt.source_key) ?? []),
+      {
+        correct: Boolean(attempt.correct),
+        confidence: attempt.confidence,
+        kind: attempt.kind,
+        at: attempt.created_at,
+      },
+    ]);
   }
+  const scorableKeys = new Set(
+    questions.filter((question) => !question.reviewRequired).map((question) => question.sourceKey),
+  );
   const independent = [...first.values()].filter((row) => row.kind === "independent");
   // The exam mark is one point per scorable question's first saved attempt.
   // Never grade unsent drafts or let later retries rewrite the original mark.
@@ -414,6 +478,9 @@ export function practiceSnapshot(id: string, slug: string): PracticeSnapshot {
       independent: firstScorable.filter((attempt) => attempt.kind === "independent").length,
       assisted: firstScorable.filter((attempt) => attempt.kind === "assisted").length,
       review: firstScorable.filter((attempt) => attempt.kind === "review").length,
+      confidentWrong: firstScorable.filter(
+        (attempt) => !attempt.correct && attempt.confidence === "sure",
+      ).length,
       unansweredKeys: scorable
         .filter((question) => !first.has(question.sourceKey))
         .map((question) => question.sourceKey),
@@ -441,6 +508,7 @@ export function practiceSnapshot(id: string, slug: string): PracticeSnapshot {
       .filter((row) => !row.correct)
       .sort((a, b) => a.created_at - b.created_at)
       .map((row) => row.source_key),
+    dueKeys: dueSourceKeys(history, Date.now(), (key) => scorableKeys.has(key)),
     progress: {
       attempted: first.size,
       independent: independent.length,

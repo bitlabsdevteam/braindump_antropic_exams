@@ -22,7 +22,20 @@ export type Question = {
   reviewNote: string | null;
 };
 
-export type Answer = { correctKeys: string[]; rationale: string; reviewNote?: string | null };
+/** Learner coaching that sits beside, never replaces, the source answer and rationale. */
+export type StudyNotes = {
+  status: "draft" | "reviewed";
+  concept: string;
+  optionNotes: Record<string, string>;
+  mnemonic: string | null;
+};
+
+export type Answer = {
+  correctKeys: string[];
+  rationale: string;
+  reviewNote?: string | null;
+  study?: StudyNotes;
+};
 
 export type Certification = {
   id: number;

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "note": "Study aids are learner-facing coaching, separate from the source answer, rationale and question text. Each entry stays 'draft' until a person has checked it against the source PDF. 'hints' are shown before reveal and must never name or quote the correct option; 'optionNotes' and 'mnemonic' are shown only after reveal.",
+  "questions": {
+    "associate-1.1": {
+      "status": "draft",
+      "concept": "Effective prompts supply what the model cannot guess",
+      "hints": [
+        "For each revision, ask what the model would still have to guess if it received exactly that text.",
+        "Cross out revisions that add pressure, repetition, or flattery instead of new information.",
+        "The strongest revision states the deliverable, its length, the audience, the tone, and the goal."
+      ],
+      "optionNotes": {
+        "A": "Asks for 'better' but adds no information the model lacked, so it applies pressure without content.",
+        "B": "Supplies the deliverable, length, audience, tone, and goal: everything the model could not guess.",
+        "C": "Repeating the request restates the same missing context; it adds emphasis, not information.",
+        "D": "A persona flatters the model but still omits audience, format, and purpose, which determine the result."
+      },
+      "mnemonic": "Five ingredients: what, how long, who for, what voice, why."
+    },
+    "associate-1.7": {
+      "status": "draft",
+      "concept": "Audience, purpose, and deliverable constraints",
+      "hints": [
+        "Sort the choices into those that give the model more information about its target and those that withhold it.",
+        "Eliminate choices that rely on emphasis or on the model guessing rather than on facts.",
+        "Look for one choice about who the text is for and why, and one about the shape the result must take."
+      ],
+      "optionNotes": {
+        "A": "Deliberate vagueness withholds exactly the information that output quality depends on.",
+        "B": "Audience and purpose let the model aim at the right target.",
+        "C": "Capital letters change emphasis, not the model's understanding.",
+        "D": "Format, length, and tone fix the shape of the deliverable so the draft is usable.",
+        "E": "Asking the model to guess withholds what only the company knows."
+      },
+      "mnemonic": "Aim (who and why) plus shape (format, length, tone)."
+    },
+    "professional-1.11": {
+      "status": "draft",
+      "concept": "Choosing the simplest agentic pattern that fits",
+      "hints": [
+        "For each scenario ask whether the sequence of steps is fixed in advance or decided by what earlier steps reveal.",
+        "Count how many distinct specialists, each with their own tools and context, the task needs.",
+        "A single transformation with its context supplied needs no orchestration at all."
+      ],
+      "optionNotes": {
+        "A": "One augmented call suits a single transformation where the needed context is supplied (scenarios 1 and 5).",
+        "B": "A fixed workflow suits a stable, repeating sequence of steps (scenario 2).",
+        "C": "An autonomous agent suits a path that depends on what each step reveals (scenario 3).",
+        "D": "A multi-agent system suits distinct specialists coordinated into one output (scenario 4)."
+      },
+      "mnemonic": "Climb the ladder only as far as needed: one call, fixed steps, runtime-decided path, many specialists."
+    }
+  }
+}

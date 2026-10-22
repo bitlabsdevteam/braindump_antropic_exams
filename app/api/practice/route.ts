@@ -84,7 +84,7 @@ export async function POST(request: Request) {
         throw new PracticeError("Invalid submission id");
       return jsonResponse(
         {
-          ...submitAttempt(id, questionId, body.requestId, body.revision),
+          ...submitAttempt(id, questionId, body.requestId, body.revision, body.confidence),
           snapshot: practiceSnapshot(id, slug),
           recommendations: recommendations(id, questionId),
         },

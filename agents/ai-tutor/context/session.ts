@@ -62,6 +62,24 @@ export function sessionDatabase() {
       SELECT session_id, question_id, MIN(created_at), MAX(created_at)
       FROM messages GROUP BY session_id, question_id;
     INSERT OR IGNORE INTO learning_migrations(version) VALUES (2);`);
+  // v3: optional self-rated confidence recorded with each attempt. It never affects the mark.
+  if (
+    !db
+      .prepare("PRAGMA table_info(attempts)")
+      .all()
+      .some((column) => (column as { name: string }).name === "confidence")
+  )
+    db.exec("ALTER TABLE attempts ADD COLUMN confidence TEXT");
+  db.exec("INSERT OR IGNORE INTO learning_migrations(version) VALUES (3)");
+  // v4: static (non-AI) hint stage, separate from the tutor's own `hint_count`.
+  if (
+    !db
+      .prepare("PRAGMA table_info(question_state)")
+      .all()
+      .some((column) => (column as { name: string }).name === "static_hints")
+  )
+    db.exec("ALTER TABLE question_state ADD COLUMN static_hints INTEGER NOT NULL DEFAULT 0");
+  db.exec("INSERT OR IGNORE INTO learning_migrations(version) VALUES (4)");
   migrateMemory(db);
   return db;
 }
