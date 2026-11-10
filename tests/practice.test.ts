@@ -344,7 +344,7 @@ test("restart is certification and learner scoped, clears exam memory, and prese
     );
 });
 
-test("restart API validates origin and certification and supports all four exam sets", async () => {
+test("restart API validates origin and certification and supports all exam sets", async () => {
   const id = fresh();
   function request(certification: unknown, origin = "http://localhost") {
     return new Request("http://localhost/api/practice", {
@@ -364,6 +364,7 @@ test("restart API validates origin and certification and supports all four exam 
     "architect-foundations",
     "developer-foundations",
     "associate-foundations",
+    "architect-foundations-haider",
   ]) {
     const response = await route.POST(request(slug));
     assert.equal(response.status, 200);
@@ -986,7 +987,7 @@ test("submission responses update score immediately for every format without lea
   }
 });
 
-test("final marks include every question format across all four complete certifications", () => {
+test("final marks include every question format across all complete practice sets", () => {
   const id = fresh();
   for (const certification of bank.getCertifications()) {
     const all = bank.getQuestions(certification.slug);

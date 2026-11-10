@@ -36,6 +36,11 @@ export default async function PracticePage({ params }: { params: Promise<{ slug:
           <details className="source-disclaimer">
             <summary>Source disclaimer · {certification.sourceVersion}</summary>
             <p>{certification.disclaimer}</p>
+            {certification.sourceLicense && (
+              <p>
+                {certification.sourceAuthor}. {certification.sourceLicense}
+              </p>
+            )}
           </details>
           <PracticeClient
             certification={slug}

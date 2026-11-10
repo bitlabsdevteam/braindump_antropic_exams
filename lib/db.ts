@@ -19,7 +19,7 @@ function getDb() {
 export function getCertifications(): Certification[] {
   return getDb()
     .prepare(
-      "SELECT id, slug, title, short_title as shortTitle, description, question_count as questionCount, domain_count as domainCount, time_limit_minutes as timeLimitMinutes, source_file as sourceFile, disclaimer, source_version as sourceVersion FROM certifications ORDER BY id",
+      "SELECT id, slug, title, short_title as shortTitle, description, question_count as questionCount, domain_count as domainCount, time_limit_minutes as timeLimitMinutes, source_file as sourceFile, disclaimer, source_version as sourceVersion, source_revised_at as sourceRevisedAt, source_license as sourceLicense, source_author as sourceAuthor FROM certifications ORDER BY id",
     )
     .all() as Certification[];
 }
@@ -27,7 +27,7 @@ export function getCertifications(): Certification[] {
 export function getCertification(slug: string): Certification | undefined {
   return getDb()
     .prepare(
-      "SELECT id, slug, title, short_title as shortTitle, description, question_count as questionCount, domain_count as domainCount, time_limit_minutes as timeLimitMinutes, source_file as sourceFile, disclaimer, source_version as sourceVersion FROM certifications WHERE slug = ?",
+      "SELECT id, slug, title, short_title as shortTitle, description, question_count as questionCount, domain_count as domainCount, time_limit_minutes as timeLimitMinutes, source_file as sourceFile, disclaimer, source_version as sourceVersion, source_revised_at as sourceRevisedAt, source_license as sourceLicense, source_author as sourceAuthor FROM certifications WHERE slug = ?",
     )
     .get(slug) as Certification | undefined;
 }
@@ -37,7 +37,7 @@ export function getQuestions(slug: string): Question[] {
   if (!certification) return [];
   const rows = getDb()
     .prepare(
-      `SELECT q.id, q.source_key as sourceKey, q.ordinal, q.type, q.prompt, q.selection_count as selectionCount, q.source_page as sourcePage, q.review_required as reviewRequired, CASE WHEN q.review_required = 1 THEN 'The selection instruction, source answer key, and rationale conflict. Reveal the source answer to inspect the discrepancy.' ELSE NULL END as reviewNote, d.number as domainNumber, d.name as domainName, s.number as scenarioNumber, s.title as scenarioTitle, s.description as scenarioDescription FROM questions q LEFT JOIN domains d ON d.id = q.domain_id LEFT JOIN scenarios s ON s.id = q.scenario_id WHERE q.certification_id = ? ORDER BY q.ordinal`,
+      `SELECT q.id, q.source_key as sourceKey, q.ordinal, q.type, q.source_format as sourceFormat, q.prompt, q.selection_count as selectionCount, q.source_page as sourcePage, q.review_required as reviewRequired, CASE WHEN q.review_required = 1 THEN 'The selection instruction, source answer key, and rationale conflict. Reveal the source answer to inspect the discrepancy.' ELSE NULL END as reviewNote, d.number as domainNumber, d.name as domainName, s.number as scenarioNumber, s.title as scenarioTitle, s.description as scenarioDescription FROM questions q LEFT JOIN domains d ON d.id = q.domain_id LEFT JOIN scenarios s ON s.id = q.scenario_id WHERE q.certification_id = ? ORDER BY q.ordinal`,
     )
     .all(certification.id) as Omit<Question, "options" | "matchItems">[];
   const optionStmt = getDb().prepare(
@@ -57,7 +57,7 @@ export function getQuestions(slug: string): Question[] {
 export function getQuestion(questionId: number): Question | undefined {
   const row = getDb()
     .prepare(
-      `SELECT q.id, q.source_key as sourceKey, q.ordinal, q.type, q.prompt, q.selection_count as selectionCount, q.source_page as sourcePage, q.review_required as reviewRequired, CASE WHEN q.review_required = 1 THEN 'The selection instruction, source answer key, and rationale conflict. Reveal the source answer to inspect the discrepancy.' ELSE NULL END as reviewNote, d.number as domainNumber, d.name as domainName, s.number as scenarioNumber, s.title as scenarioTitle, s.description as scenarioDescription FROM questions q LEFT JOIN domains d ON d.id = q.domain_id LEFT JOIN scenarios s ON s.id = q.scenario_id WHERE q.id = ?`,
+      `SELECT q.id, q.source_key as sourceKey, q.ordinal, q.type, q.source_format as sourceFormat, q.prompt, q.selection_count as selectionCount, q.source_page as sourcePage, q.review_required as reviewRequired, CASE WHEN q.review_required = 1 THEN 'The selection instruction, source answer key, and rationale conflict. Reveal the source answer to inspect the discrepancy.' ELSE NULL END as reviewNote, d.number as domainNumber, d.name as domainName, s.number as scenarioNumber, s.title as scenarioTitle, s.description as scenarioDescription FROM questions q LEFT JOIN domains d ON d.id = q.domain_id LEFT JOIN scenarios s ON s.id = q.scenario_id WHERE q.id = ?`,
     )
     .get(questionId) as Omit<Question, "options" | "matchItems"> | undefined;
   if (!row) return undefined;
@@ -77,7 +77,7 @@ export function getQuestion(questionId: number): Question | undefined {
 export function getCertificationForQuestion(questionId: number): Certification | undefined {
   return getDb()
     .prepare(
-      `SELECT c.id, c.slug, c.title, c.short_title as shortTitle, c.description, c.question_count as questionCount, c.domain_count as domainCount, c.time_limit_minutes as timeLimitMinutes, c.source_file as sourceFile, disclaimer, source_version as sourceVersion FROM certifications c JOIN questions q ON q.certification_id = c.id WHERE q.id = ?`,
+      `SELECT c.id, c.slug, c.title, c.short_title as shortTitle, c.description, c.question_count as questionCount, c.domain_count as domainCount, c.time_limit_minutes as timeLimitMinutes, c.source_file as sourceFile, disclaimer, source_version as sourceVersion, source_revised_at as sourceRevisedAt, source_license as sourceLicense, source_author as sourceAuthor FROM certifications c JOIN questions q ON q.certification_id = c.id WHERE q.id = ?`,
     )
     .get(questionId) as Certification | undefined;
 }

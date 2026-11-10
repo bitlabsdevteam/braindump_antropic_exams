@@ -104,6 +104,7 @@ for (const [slug, total] of [
   ["architect-foundations", 60],
   ["developer-foundations", 52],
   ["associate-foundations", 60],
+  ["architect-foundations-haider", 60],
 ] as const) {
   test(`${slug}: complete exam includes last answer, shows exact final mark, and survives refresh`, async ({
     page,

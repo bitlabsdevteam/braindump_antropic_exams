@@ -1,6 +1,6 @@
 # BrainDump.com — Claude certification question coach
 
-An independent Next.js study companion built from the four PDFs in `pdf/`. Choose a certification, attempt a question, ask for conceptual hints, then reveal the source answer and rationale. The tutor connects to **Microsoft Foundry** through the AI Projects SDK or Microsoft's documented resource v1 SDK connection; grading and progress are handled by application code and SQLite.
+An independent Next.js study companion built from eight practice PDFs in `pdf/`, covering four certifications. Choose a practice set, attempt a question, ask for conceptual hints, then reveal the source answer and rationale. The tutor connects to **Microsoft Foundry** through the AI Projects SDK or Microsoft's documented resource v1 SDK connection; grading and progress are handled by application code and SQLite.
 
 This application is not affiliated with Anthropic and does not provide official live-exam content or guarantee a pass. The original disclaimer from each PDF is retained in the database and displayed on its practice page.
 
@@ -43,22 +43,30 @@ Project mode uses `AIProjectClient` from `@azure/ai-projects` and Azure Identity
 - The coach offers three progressive hint stages, concept explanations, and post-reveal review. Source text remains separate from AI commentary.
 - Suggestions prioritize unresolved mistakes, then unattempted questions in the current domain, then other domains in the same certification. The learner chooses when to navigate.
 - Progress shows independent first-attempt accuracy with sample counts, assisted attempts, review outcomes, and domain breakdowns. It does not claim an exam-readiness or mastery score.
-- The optional 120-minute timer stores an absolute deadline. It survives refresh and continues into review when time expires; coaching remains available throughout.
+- The optional 120-minute timer stores an absolute deadline. It survives refresh and continues into review when time expires; coaching remains available throughout. The October 2026 set and the November second editions do not state a time limit, so their timers are labeled as practice defaults and their source time-limit metadata stays empty.
 
 An opaque HttpOnly cookie identifies the anonymous learner. Progress lasts **30 days from creation** in the same browser; clearing cookies loses access. No account is required. Completed conversations, compacted summaries, and explicit teaching preferences are stored in SQLite for the learner’s 30-day lifetime. The model receives bounded recent turns plus a summary of older conversation; revealed-answer memory is excluded whenever the answer is hidden. Use **Memory & conversation history** to inspect or forget memory while keeping grades. Expired records are purged on the next API request. **Reset learning progress** deletes all stored progress and conversations for that browser across certifications. Free-text reasoning and tutor messages are sent to the configured model when coaching is requested; avoid entering personal or confidential information.
 
 ## Source integrity
 
-| Certification            | Questions |          Domains |        Time |
-| ------------------------ | --------: | ---------------: | ----------: |
-| Architect – Professional |        63 |                7 | 120 minutes |
-| Architect – Foundations  |        60 | 5; six scenarios | 120 minutes |
-| Developer – Foundations  |        53 |                8 | 120 minutes |
-| Associate – Foundations  |        60 |                7 | 120 minutes |
+| Certification                                                | Questions |          Domains |        Time |
+| ------------------------------------------------------------ | --------: | ---------------: | ----------: |
+| Architect – Professional                                     |        63 |                7 | 120 minutes |
+| Architect – Foundations                                      |        60 | 5; six scenarios | 120 minutes |
+| Developer – Foundations                                      |        53 |                8 | 120 minutes |
+| Associate – Foundations                                      |        60 |                7 | 120 minutes |
+| Architect – Foundations · Muhammad Haider Yar (October 2026) |        60 | 5; six scenarios |  Not stated |
+| Architect – Professional · Second Edition (3 November 2026)  |        63 |                7 |  Not stated |
+| Developer – Foundations · Second Edition (4 November 2026)   |        53 |                8 |  Not stated |
+| Associate – Foundations · Second Edition (5 November 2026)   |        60 |                7 |  Not stated |
+
+The additional Architect–Foundations set comes from `pdf/1793260252763.pdf` and is available at `/exams/architect-foundations-haider/practice`. Its 49 single-choice and 11 two-answer questions use separate source keys (`foundations-haider-1.1` through `foundations-haider-6.10`) and progress. The importer checks all 60 answers against both the quick answer table and the detailed rationale headings, retains exam-guide task references with the rationales, and validates the source domain counts of 16, 11, 12, 12, and 9. The original Architect–Foundations set remains available.
+
+The landing page highlights the latest revised second editions from `1793435805966.pdf` (Architect–Professional, revised 3 November), `1793437533661.pdf` (Developer–Foundations, revised 4 November), and `1793438128494.pdf` (Associate–Foundations, revised 5 November), all in 2026. Revision dates are validated against the PDF cover text and stored in SQLite; file timestamps are not used. These sets have separate `-v2` routes and source keys, so earlier questions and learner progress remain available. All 24 new matching tables retain their rows and choices, including Yes/No review; the 10 ordering questions use radio choices exactly as in the PDF, with their five numbered steps and validated answer sequences. The source author (Matthew Purcell) and CC BY-NC 4.0 license are retained and shown alongside each revised set’s disclaimer.
 
 The importer reads and validates the title/version, time limit, blueprint, disclaimer, question sequence, answer mappings, and physical PDF page numbers. It preserves stable question IDs and source keys through transactional upserts. Repeated seeding does not erase learning progress. Older malformed child records are reconciled to the source within that transaction and reported.
 
-**Known source discrepancy:** `developer-5.9` requests one answer; its key lists **A, D**, while its rationale supports **C**. All original content is retained and visibly flagged. The question is excluded from scoring and AI coaching, leaving **236 imported questions and 235 scorable questions**. Its disputed source key/rationale can be revealed without scoring. No correction is guessed.
+**Known source discrepancy:** `developer-5.9` requests one answer; its key lists **A, D**, while its rationale supports **C**. All original content is retained and visibly flagged. The question is excluded from scoring and AI coaching, leaving **472 imported questions and 471 scorable questions**. Its disputed source key/rationale can be revealed without scoring. No correction is guessed.
 
 `npm run seed` reports counts, inserts/updates, repairs, and review flags. `node scripts/seed.mjs --strict` fails before database mutation if any question requires source review; it currently fails for the documented Developer discrepancy.
 

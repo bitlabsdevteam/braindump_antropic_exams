@@ -407,13 +407,17 @@ function QuestionCoach({
         <div className="question-head">
           <span className="question-id">{question.sourceKey}</span>
           <span className="question-type">
-            {question.type.replace(/_/g, " ")} ·{" "}
+            {question.sourceFormat ?? question.type.replace(/_/g, " ")} ·{" "}
             {question.type === "scenario_matching"
               ? `match ${required} items`
               : `select ${required}`}
           </span>
         </div>
-        <h2 id="active-question" className="question-prompt" tabIndex={-1}>
+        <h2
+          id="active-question"
+          className={`question-prompt${question.sourceFormat === "Ordering" ? " question-prompt-ordering" : ""}`}
+          tabIndex={-1}
+        >
           {question.prompt}
         </h2>
         <p className="question-help">
@@ -1119,7 +1123,12 @@ export default function PracticeClient({
               <input type="radio" name="timer" checked={timed} onChange={() => setTimed(true)} />
               <span>
                 <strong>Timed practice</strong>
-                <small>{timeLimitMinutes ?? 120} minutes · coaching stays available</small>
+                <small>
+                  {timeLimitMinutes ?? 120} minutes ·{" "}
+                  {timeLimitMinutes === null
+                    ? "practice default; no time limit stated in this PDF"
+                    : "coaching stays available"}
+                </small>
               </span>
             </label>
           </div>

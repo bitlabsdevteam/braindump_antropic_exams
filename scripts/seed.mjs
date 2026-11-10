@@ -54,6 +54,45 @@ const definitions = {
     description:
       "A full-length set covering prompting, output validation, product and model selection, workflow integration, configuration, governance, and troubleshooting.",
   },
+  "foundations-haider": {
+    file: "1793260252763.pdf",
+    slug: "architect-foundations-haider",
+    title: "Claude Certified Architect – Foundations",
+    shortTitle: "Architect – Foundations · Muhammad Haider Yar",
+    description:
+      "Muhammad Haider Yar’s October 2026 practice set: six production scenarios covering agent orchestration, MCP tools, Claude Code, structured output, and reliability.",
+    layout: "haider-october-2026",
+  },
+  "professional-v2": {
+    file: "1793435805966.pdf",
+    slug: "architect-professional-v2",
+    title: "Claude Certified Architect – Professional",
+    shortTitle: "Architect – Professional · Second Edition",
+    description:
+      "Rewritten architect scenarios covering solution design, model decisions, integration, evaluation, and governance, with Yes/No and classification matching.",
+    revised: "3 November 2026",
+    formats: { "multiple choice": 30, "multiple response": 13, matching: 20 },
+  },
+  "developer-v2": {
+    file: "1793437533661.pdf",
+    slug: "developer-foundations-v2",
+    title: "Claude Certified Developer – Foundations",
+    shortTitle: "Developer – Foundations · Second Edition",
+    description:
+      "Rewritten developer scenarios covering agents, application integration, Claude Code, model optimization, security, and tools, including matching questions.",
+    revised: "4 November 2026",
+    formats: { "multiple choice": 42, "multiple response": 7, matching: 4 },
+  },
+  "associate-v2": {
+    file: "1793438128494.pdf",
+    slug: "associate-foundations-v2",
+    title: "Claude Certified Associate – Foundations",
+    shortTitle: "Associate – Foundations · Second Edition",
+    description:
+      "Rewritten business scenarios covering prompting, output validation, product selection, workflows, and responsible use, including process-ordering questions.",
+    revised: "5 November 2026",
+    formats: { "multiple choice": 31, "multiple response": 19, ordering: 10 },
+  },
 };
 
 // PDF layout artifacts are removed, but wording and punctuation remain source text.
@@ -66,9 +105,74 @@ function cleanText(lines) {
 function fail(message) {
   throw new Error(`Question bank validation: ${message}`);
 }
-const expectedCounts = { professional: 63, foundations: 60, developer: 53, associate: 60 };
+const expectedCounts = {
+  professional: 63,
+  foundations: 60,
+  developer: 53,
+  associate: 60,
+  "foundations-haider": 60,
+  "professional-v2": 63,
+  "developer-v2": 53,
+  "associate-v2": 60,
+};
+
+// Retain layout whitespace: it separates table rows and the statement/option columns.
+// Trimming first would merge wrapped statements with checkbox labels.
+function parseMatchingTable(raw, key, where) {
+  const source = raw
+    .split("\n")
+    .filter((line) => !/^CC(?:AR|AO|DV)-[PF] Practice Questions/.test(cleanLine(line)))
+    .join("\n");
+  const start = source.indexOf(`Question ${key} ·`);
+  const rest = source.slice(start).split("\n").slice(1).join("\n");
+  const block = rest.split(/Question \d+\.\d+ ·|Domain \d+:|Answer Key & Rationales/)[0];
+  const rawLines = block.split("\n");
+  const headerIndex = rawLines.findIndex((line) =>
+    /^(?:Statement|Item)\s+Select (?:Yes or No|one)$/.test(cleanLine(line)),
+  );
+  if (start < 0 || headerIndex < 0) fail(`${where}: missing matching table`);
+  const table = rawLines.slice(headerIndex + 1).join("\n");
+  const columns = table
+    .split("\n")
+    .filter((line) => line.includes("☐"))
+    .map((line) => line.indexOf("☐"));
+  if (!columns.length) fail(`${where}: missing matching choices`);
+  const column = Math.min(...columns);
+  const rows = table.split(/\n\s*\n/).filter((row) => row.trim());
+  let labels;
+  const matchItems = rows.map((row, ordinal) => {
+    const lines = row.split("\n");
+    const text = cleanText(lines.map((line) => line.slice(0, column)));
+    const choices = cleanText(lines.map((line) => line.slice(column)));
+    const current = choices
+      .split("☐")
+      .slice(1)
+      .map((label) => label.trim());
+    if (
+      !text ||
+      !choices.startsWith("☐") ||
+      current.length < 2 ||
+      new Set(current).size !== current.length ||
+      current.some((label) => !label)
+    )
+      fail(`${where}: ambiguous matching row ${ordinal + 1}`);
+    if (labels && JSON.stringify(labels) !== JSON.stringify(current))
+      fail(`${where}: inconsistent matching choices in row ${ordinal + 1}`);
+    labels = current;
+    return { key: String(ordinal + 1), text };
+  });
+  if (!labels || matchItems.length < 2) fail(`${where}: incomplete matching table`);
+  return {
+    prompt: cleanText(rawLines.slice(0, headerIndex)),
+    matchItems,
+    options: labels.map((text, ordinal) => ({ key: String.fromCharCode(65 + ordinal), text })),
+  };
+}
 
 function parsePdf(def, kind) {
+  const haiderLayout = def.layout === "haider-october-2026";
+  const secondEdition = Boolean(def.revised);
+  const scenarioBased = kind === "foundations" || haiderLayout;
   const raw = execFileSync("pdftotext", ["-layout", path.join(pdfDir, def.file), "-"], {
     encoding: "utf8",
   });
@@ -82,30 +186,73 @@ function parsePdf(def, kind) {
   );
   const texts = lines.map((line) => line.text);
   const firstQuestion = texts.findIndex((line) => /^Question \d+\.\d+ ·/.test(line));
+  if (firstQuestion < 0) fail(`${kind}: missing question section`);
   const preface = cleanText(texts.slice(0, firstQuestion));
-  if (texts[0] !== def.title) fail(`${def.file}: unexpected source title ${texts[0]}`);
-  if (!preface.includes("Exam Guide v1.0 (July 2026)"))
+  // The October set wraps the cover title across two lines. Its full title also
+  // appears beneath the author, so validate both instead of using the filename.
+  const title = haiderLayout ? texts.find((line) => line === def.title) : texts[0];
+  if (
+    title !== def.title ||
+    (haiderLayout &&
+      (texts[0] !== "Claude Certified Architect" ||
+        texts[1] !== "Foundations" ||
+        texts[2] !== "(CCAR-F)"))
+  )
+    fail(`${def.file}: unexpected source title ${texts[0]}`);
+  if (!haiderLayout && !preface.includes("Exam Guide v1.0 (July 2026)"))
     fail(`${kind}: unreviewed exam guide version`);
+  if (
+    haiderLayout &&
+    (!preface.includes("Muhammad Haider Yar") ||
+      !preface.includes("documentation as of October 2026"))
+  )
+    fail(`${kind}: unreviewed source author/version`);
   if (kind === "foundations" && !preface.includes("Version 2 ·"))
     fail(`${kind}: unreviewed source version`);
+  const revision = texts.find((line) => line.startsWith("Revised "));
+  if (
+    secondEdition &&
+    (texts[1] !== "Full Practice Question Set — Second Edition" ||
+      revision !==
+        `Revised ${def.revised} · Written following Exam Guide v1.0 (July 2026) · ${expectedCounts[kind]} questions`)
+  )
+    fail(`${kind}: unreviewed second edition or revision date`);
   const time = preface.match(/give yourself (\d+) minutes/);
-  if (!time || Number(time[1]) !== 120) fail(`${kind}: missing or changed time limit`);
-  const disclaimer = preface.match(/Important:.*?(?= How the \d+ questions are distributed)/)?.[0];
+  if (!haiderLayout && !secondEdition && (!time || Number(time[1]) !== 120))
+    fail(`${kind}: missing or changed time limit`);
+  if ((haiderLayout || secondEdition) && /\b\d+\s*(?:minutes|hours)\b/i.test(preface))
+    fail(`${kind}: source time limit needs review`);
+  const disclaimer = haiderLayout
+    ? preface.match(/Please note\..*?not affiliated with or endorsed by Anthropic\./)?.[0]
+    : preface.match(/Important:.*?(?= How the \d+ questions are distributed)/)?.[0];
   if (!disclaimer) fail(`${kind}: missing source disclaimer`);
-  const blueprint = [...preface.matchAll(/(\d+)\.\s+(.+?) — ([\d.]+)% → (\d+) questions?/g)].map(
-    (match) => ({
-      number: Number(match[1]),
-      name: match[2],
-      weight: Number(match[3]),
-      count: Number(match[4]),
-    }),
-  );
+  const license = secondEdition
+    ? preface.match(
+        /This work is licensed under the Creative Commons Attribution-NonCommercial 4\.0 International License \(CC BY-NC 4\.0\)\./,
+      )?.[0]
+    : null;
+  if (secondEdition && !license) fail(`${kind}: missing source license`);
+  if (secondEdition && !raw.includes("Matthew Purcell · linkedin.com/in/purcellmatthew"))
+    fail(`${kind}: unreviewed source attribution`);
+  const blueprint = haiderLayout
+    ? texts.slice(0, firstQuestion).flatMap((line) => {
+        const match = line.match(/^Domain (\d+)\s+(.+?)\s+(\d+)$/);
+        return match
+          ? [{ number: Number(match[1]), name: match[2], weight: null, count: Number(match[3]) }]
+          : [];
+      })
+    : [...preface.matchAll(/(\d+)\.\s+(.+?) — ([\d.]+)% → (\d+) questions?/g)].map((match) => ({
+        number: Number(match[1]),
+        name: match[2],
+        weight: Number(match[3]),
+        count: Number(match[4]),
+      }));
   if (
     !blueprint.length ||
     blueprint.reduce((sum, item) => sum + item.count, 0) !== expectedCounts[kind]
   )
     fail(`${kind}: invalid blueprint`);
-  const answerStart = texts.indexOf("Answer Key & Rationales");
+  const answerStart = texts.indexOf(haiderLayout ? "Answer key" : "Answer Key & Rationales");
   if (answerStart < firstQuestion) fail(`${kind}: missing answer section`);
   const questionLines = texts.slice(0, answerStart);
   const markers = questionLines.flatMap((line, index) => {
@@ -124,6 +271,22 @@ function parsePdf(def, kind) {
   });
   const answerLines = texts.slice(answerStart + 1);
   const answerMarkers = answerLines.flatMap((line, index) => {
+    if (haiderLayout) {
+      const match = line.match(
+        /^(\d+\.\d+)\s+Answer: ([A-Z](?:, [A-Z])*)\s+(Exam guide task statement [\d., ]+)\s+Domain (\d+)$/,
+      );
+      return match
+        ? [
+            {
+              index,
+              key: match[1],
+              header: `Correct: ${match[2]}`,
+              reference: cleanText([match[3], `Domain ${match[4]}`]),
+              domainNumber: Number(match[4]),
+            },
+          ]
+        : [];
+    }
     const match = line.match(/^(\d+\.\d+) — (.+)$/);
     return match ? [{ index, key: match[1], header: match[2] }] : [];
   });
@@ -136,9 +299,26 @@ function parsePdf(def, kind) {
     );
     // Section headings and the author's closing invitation are not part of a rationale.
     const end = body.findIndex((line) =>
-      /^(?:Domain \d+:|Scenario \d+:|How did you go\?)/.test(line),
+      /^(?:Domain \d+:|Scenario \d+:|How did you (?:go|do)\?)/.test(line),
     );
-    answers.set(marker.key, { header: marker.header, body: end < 0 ? body : body.slice(0, end) });
+    answers.set(marker.key, { ...marker, body: end < 0 ? body : body.slice(0, end) });
+  }
+  if (haiderLayout) {
+    const rationaleStart = answerLines.indexOf("Answers and rationales");
+    if (rationaleStart < 0) fail(`${kind}: missing rationales heading`);
+    const quickAnswers = [
+      ...cleanText(answerLines.slice(0, rationaleStart)).matchAll(
+        /(\d+\.\d+)\s+([A-Z](?:,\s*[A-Z])*)/g,
+      ),
+    ];
+    if (
+      quickAnswers.length !== expectedCounts[kind] ||
+      new Set(quickAnswers.map((match) => match[1])).size !== expectedCounts[kind]
+    )
+      fail(`${kind}: incomplete or duplicate quick answer key`);
+    for (const [, key, correct] of quickAnswers)
+      if (answers.get(key)?.header !== `Correct: ${correct}`)
+        fail(`${kind} ${key}: quick answer key conflicts with rationale answer`);
   }
   const scenarios = new Map();
   const questions = [];
@@ -155,24 +335,34 @@ function parsePdf(def, kind) {
       marker.index + 1,
       markers[index + 1]?.index ?? questionLines.length,
     );
-    const sectionEnd = block.findIndex((line) => /^(?:Domain \d+:|Scenario \d+:)/.test(line));
+    const sectionEnd = block.findIndex((line) =>
+      /^(?:Domain \d+:|Scenario \d+:|SCENARIO \d+$)/.test(line),
+    );
     if (sectionEnd >= 0) block = block.slice(0, sectionEnd);
     const headerDomain = marker.header.match(/Domain (\d+)/);
     const domainNumber = headerDomain ? Number(headerDomain[1]) : marker.group;
     const domain = blueprint.find((entry) => entry.number === domainNumber);
     if (!domain) fail(`${kind} ${marker.key}: unknown domain`);
     let scenario = null;
-    if (kind === "foundations") {
+    if (scenarioBased) {
       const scenarioIndex = questionLines
         .slice(0, marker.index)
-        .findLastIndex((line) => line.startsWith(`Scenario ${marker.group}:`));
+        .findLastIndex((line) =>
+          haiderLayout
+            ? line === `SCENARIO ${marker.group}`
+            : line.startsWith(`Scenario ${marker.group}:`),
+        );
       if (scenarioIndex < 0) fail(`${kind} ${marker.key}: missing scenario`);
-      const title = questionLines[scenarioIndex].replace(/^Scenario \d+:\s*/, "");
+      const title = haiderLayout
+        ? questionLines[scenarioIndex + 1]
+        : questionLines[scenarioIndex].replace(/^Scenario \d+:\s*/, "");
       const firstScenarioQuestion = markers.find((item) => item.group === marker.group).index;
       scenario = {
         number: marker.group,
         title,
-        description: cleanText(questionLines.slice(scenarioIndex + 1, firstScenarioQuestion)),
+        description: cleanText(
+          questionLines.slice(scenarioIndex + (haiderLayout ? 2 : 1), firstScenarioQuestion),
+        ),
       };
       scenarios.set(scenario.number, scenario);
     }
@@ -181,14 +371,26 @@ function parsePdf(def, kind) {
       "multiple choice": "single_choice",
       "multiple response": "multiple_response",
       "scenario matching": "scenario_matching",
+      matching: "scenario_matching",
+      ordering: "single_choice",
     }[format];
     if (!type) fail(`${kind} ${marker.key}: unsupported type ${format}`);
-    const countWord = marker.header.match(/select (ONE|TWO|THREE|FOUR)/)?.[1];
+    const countWord = marker.header
+      .match(/(?:select|choose) (ONE|TWO|THREE|FOUR)/i)?.[1]
+      .toUpperCase();
     let selectionCount = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4 }[countWord];
     const options = [];
     const matchItems = [];
     let prompt;
-    if (type === "scenario_matching") {
+    if (format === "matching") {
+      if (!secondEdition || !/^Matching · (Yes\/No|classify)$/.test(marker.header))
+        fail(`${kind} ${marker.key}: unsupported matching format`);
+      const table = parseMatchingTable(raw, marker.key, `${kind} ${marker.key}`);
+      prompt = table.prompt;
+      options.push(...table.options);
+      matchItems.push(...table.matchItems);
+      selectionCount = matchItems.length;
+    } else if (type === "scenario_matching") {
       const firstItem = block.findIndex((line) => /^\d+\.\s+/.test(line));
       const optionStart = block.findIndex((line) => line.startsWith("Options:"));
       if (firstItem < 0 || optionStart < firstItem)
@@ -224,6 +426,8 @@ function parsePdf(def, kind) {
       fail(`${kind} ${marker.key}: invalid prompt/options`);
     const answer = answers.get(marker.key);
     if (!answer) fail(`${kind} ${marker.key}: missing answer`);
+    if (haiderLayout && answer.domainNumber !== domainNumber)
+      fail(`${kind} ${marker.key}: question and answer domains differ`);
     let reviewNote = null;
     let correctKeys;
     let rationaleLines = [...answer.body];
@@ -257,6 +461,21 @@ function parsePdf(def, kind) {
         .slice("Correct: ".length)
         .split(",")
         .map((key) => key.trim());
+      if (format === "ordering") {
+        const ordered = answer.header.match(/^Correct: ([A-Z]) \(([1-5](?:, [1-5]){4})\)$/);
+        const steps = [...prompt.matchAll(/\(([1-5])\) /g)].map((match) => match[1]);
+        if (
+          !secondEdition ||
+          !ordered ||
+          steps.join(",") !== "1,2,3,4,5" ||
+          options.find((option) => option.key === ordered[1])?.text !== ordered[2] ||
+          options.some((option) => option.text.split(", ").sort().join(",") !== "1,2,3,4,5")
+        )
+          fail(`${kind} ${marker.key}: ordering steps and answer sequence disagree`);
+        correctKeys = [ordered[1]];
+        rationaleLines.unshift(`Correct sequence: ${ordered[2]}.`);
+        prompt = prompt.replace(/\s+\(([1-5])\) /g, "\n($1) ");
+      }
       if (
         new Set(correctKeys).size !== correctKeys.length ||
         correctKeys.some((key) => !options.some((item) => item.key === key))
@@ -276,12 +495,17 @@ function parsePdf(def, kind) {
           "Source discrepancy: this question requests one answer, but the PDF answer key lists A, D. Its rationale describes option C and rejects A and D. Source content is preserved; this question is excluded from scoring pending source review.";
       }
     }
-    const rationale = cleanText(rationaleLines);
-    if (!rationale) fail(`${kind} ${marker.key}: missing rationale`);
+    if (!cleanText(rationaleLines)) fail(`${kind} ${marker.key}: missing rationale`);
+    const rationale = cleanText([
+      ...(answer.reference ? [answer.reference] : []),
+      ...rationaleLines,
+    ]);
     questions.push({
       sourceKey: marker.key,
       ordinal: index + 1,
       type,
+      sourceFormat:
+        format === "matching" ? marker.header : format === "ordering" ? "Ordering" : null,
       selectionCount,
       prompt,
       domain,
@@ -307,17 +531,40 @@ function parsePdf(def, kind) {
       fail(`${kind}: domain ${domain.number} blueprint expects ${domain.count}, found ${actual}`);
   }
   if (
-    kind === "foundations" &&
-    (scenarios.size !== 6 || [...groupCounts.values()].some((count) => count !== 10))
+    scenarioBased &&
+    (scenarios.size !== 6 ||
+      [...groupCounts.entries()].some(
+        ([group, count], index) => count !== 10 || group !== index + 1,
+      ))
   )
     fail(`${kind}: expected six scenarios of ten questions`);
+  if (
+    haiderLayout &&
+    questions.filter((question) => question.type === "multiple_response").length !== 11
+  )
+    fail(`${kind}: expected eleven multiple-response questions`);
+  if (secondEdition) {
+    for (const [format, count] of Object.entries(def.formats))
+      if (
+        markers.filter((marker) => marker.header.split(" · ")[0].toLowerCase() === format)
+          .length !== count
+      )
+        fail(`${kind}: unexpected ${format} count`);
+  }
   return {
     ...def,
-    title: texts[0],
+    title,
     kind,
     disclaimer,
-    timeLimit: Number(time[1]),
-    version: texts.find((line) => line.includes("Exam Guide v1.0")),
+    timeLimit: time ? Number(time[1]) : null,
+    version: haiderLayout
+      ? "Muhammad Haider Yar · October 2026"
+      : texts.find((line) => line.includes("Exam Guide v1.0")),
+    revisedAt: secondEdition
+      ? new Date(`${def.revised} 00:00:00 GMT`).toISOString().slice(0, 10)
+      : null,
+    license,
+    author: secondEdition ? "Matthew Purcell" : null,
     domains: blueprint,
     scenarios: [...scenarios.values()],
     questions,
@@ -351,15 +598,19 @@ function addColumn(table, name, type) {
 }
 addColumn("certifications", "time_limit_minutes", "INTEGER");
 addColumn("certifications", "source_version", "TEXT");
+addColumn("certifications", "source_revised_at", "TEXT");
+addColumn("certifications", "source_license", "TEXT");
+addColumn("certifications", "source_author", "TEXT");
 addColumn("certifications", "updated_at", "TEXT");
 addColumn("questions", "updated_at", "TEXT");
 addColumn("questions", "review_required", "INTEGER NOT NULL DEFAULT 0");
 addColumn("questions", "review_note", "TEXT");
+addColumn("questions", "source_format", "TEXT");
 addColumn("domains", "blueprint_weight", "REAL");
 addColumn("domains", "blueprint_count", "INTEGER");
 addColumn("scenarios", "description", "TEXT");
 const upsertCertification = db.prepare(
-  `INSERT INTO certifications (slug, title, short_title, description, question_count, domain_count, time_limit_minutes, source_file, disclaimer, source_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(slug) DO UPDATE SET title=excluded.title, short_title=excluded.short_title, description=excluded.description, question_count=excluded.question_count, domain_count=excluded.domain_count, time_limit_minutes=excluded.time_limit_minutes, source_file=excluded.source_file, disclaimer=excluded.disclaimer, source_version=excluded.source_version, updated_at=CURRENT_TIMESTAMP RETURNING id`,
+  `INSERT INTO certifications (slug, title, short_title, description, question_count, domain_count, time_limit_minutes, source_file, disclaimer, source_version, source_revised_at, source_license, source_author, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(slug) DO UPDATE SET title=excluded.title, short_title=excluded.short_title, description=excluded.description, question_count=excluded.question_count, domain_count=excluded.domain_count, time_limit_minutes=excluded.time_limit_minutes, source_file=excluded.source_file, disclaimer=excluded.disclaimer, source_version=excluded.source_version, source_revised_at=excluded.source_revised_at, source_license=excluded.source_license, source_author=excluded.source_author, updated_at=CURRENT_TIMESTAMP RETURNING id`,
 );
 const upsertDomain = db.prepare(
   `INSERT INTO domains (certification_id, number, name, blueprint_weight, blueprint_count) VALUES (?, ?, ?, ?, ?) ON CONFLICT(certification_id, number) DO UPDATE SET name=excluded.name, blueprint_weight=excluded.blueprint_weight, blueprint_count=excluded.blueprint_count RETURNING id`,
@@ -368,7 +619,7 @@ const upsertScenario = db.prepare(
   `INSERT INTO scenarios (certification_id, number, title, description) VALUES (?, ?, ?, ?) ON CONFLICT(certification_id, number) DO UPDATE SET title=excluded.title, description=excluded.description RETURNING id`,
 );
 const upsertQuestion = db.prepare(
-  `INSERT INTO questions (certification_id, domain_id, scenario_id, source_key, ordinal, type, prompt, selection_count, source_page, review_required, review_note, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(source_key) DO UPDATE SET certification_id=excluded.certification_id, domain_id=excluded.domain_id, scenario_id=excluded.scenario_id, ordinal=excluded.ordinal, type=excluded.type, prompt=excluded.prompt, selection_count=excluded.selection_count, source_page=excluded.source_page, review_required=excluded.review_required, review_note=excluded.review_note, updated_at=CURRENT_TIMESTAMP RETURNING id`,
+  `INSERT INTO questions (certification_id, domain_id, scenario_id, source_key, ordinal, type, prompt, selection_count, source_page, review_required, review_note, source_format, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(source_key) DO UPDATE SET certification_id=excluded.certification_id, domain_id=excluded.domain_id, scenario_id=excluded.scenario_id, ordinal=excluded.ordinal, type=excluded.type, prompt=excluded.prompt, selection_count=excluded.selection_count, source_page=excluded.source_page, review_required=excluded.review_required, review_note=excluded.review_note, source_format=excluded.source_format, updated_at=CURRENT_TIMESTAMP RETURNING id`,
 );
 const upsertOption = db.prepare(
   `INSERT INTO options (question_id, option_key, text, ordinal) VALUES (?, ?, ?, ?) ON CONFLICT(question_id, option_key) DO UPDATE SET text=excluded.text, ordinal=excluded.ordinal`,
@@ -435,6 +686,9 @@ const seed = db.transaction(() => {
       `pdf/${exam.file}`,
       exam.disclaimer,
       exam.version,
+      exam.revisedAt,
+      exam.license,
+      exam.author,
     );
     const domainIds = new Map();
     for (const domain of exam.domains)
@@ -476,6 +730,7 @@ const seed = db.transaction(() => {
         question.sourcePage,
         question.reviewNote ? 1 : 0,
         question.reviewNote,
+        question.sourceFormat,
       );
       question.options.forEach((option, index) =>
         upsertOption.run(questionId, option.key, option.text, index + 1),
@@ -537,7 +792,7 @@ try {
   seed();
   for (const exam of parsed)
     console.log(
-      `${exam.title}: ${exam.questions.length} questions, ${exam.domains.length} domains, ${exam.timeLimit} minutes`,
+      `${exam.title} [${exam.slug}]: ${exam.questions.length} questions, ${exam.domains.length} domains, ${exam.timeLimit === null ? "no source time limit" : `${exam.timeLimit} minutes`}`,
     );
   if (removedStaleChildren)
     console.warn(

@@ -8,6 +8,7 @@ export type Question = {
   sourceKey: string;
   ordinal: number;
   type: QuestionType;
+  sourceFormat: string | null;
   prompt: string;
   selectionCount: number;
   domainNumber: number | null;
@@ -49,4 +50,7 @@ export type Certification = {
   sourceFile: string;
   disclaimer: string;
   sourceVersion: string | null;
+  sourceRevisedAt: string | null;
+  sourceLicense: string | null;
+  sourceAuthor: string | null;
 };

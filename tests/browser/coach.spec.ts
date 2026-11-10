@@ -102,13 +102,97 @@ test("timer survives refresh, mobile layout fits, source conflict is flagged", a
   );
 });
 
-test("landing lists all four certifications and invalid IDs fail safely", async ({ page }) => {
+test("landing highlights three revised editions, lists all eight sets, and invalid IDs fail safely", async ({
+  page,
+}) => {
   await page.goto("/");
-  await expect(page.locator(".cert-card")).toHaveCount(4);
+  await expect(page.locator(".cert-card")).toHaveCount(8);
+  await expect(page.locator(".cert-card-latest")).toHaveCount(3);
+  const latest = page.getByRole("region", { name: "Latest updated practice sets" });
+  await expect(latest.locator("time")).toHaveText([
+    "5 November 2026",
+    "4 November 2026",
+    "3 November 2026",
+  ]);
+  for (const card of await latest.locator("a").all())
+    await expect(card).toHaveAttribute("href", /v2\/practice/);
+  await expect(
+    page.locator('.cert-card[href="/exams/architect-foundations-haider/practice"]'),
+  ).toContainText("Muhammad Haider Yar");
+  await expect(page.locator(".hero-index")).toContainText("472");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({ path: "output/playwright/latest-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({ path: "output/playwright/latest-mobile.png", fullPage: true });
   await page.goto("/exams/does-not-exist/practice");
   await expect(page.getByRole("heading", { name: "404" })).toBeVisible();
   expect((await page.request.get("/api/practice?certification=missing")).status()).toBe(404);
   expect((await page.request.post("/api/questions/999999999/answer")).status()).toBe(404);
+});
+
+test("revised matching and ordering preserve source choices, reveal, and navigation", async ({
+  page,
+}) => {
+  for (const item of [
+    {
+      slug: "developer-foundations-v2",
+      key: "developer-v2-1.8",
+      label: "Matching · Yes/No",
+      choices: ["B", "A", "A", "A", "B", "B"],
+      sourceText: "Frameworks orchestrate",
+    },
+    {
+      slug: "architect-professional-v2",
+      key: "professional-v2-1.10",
+      label: "Matching · classify",
+      choices: ["B", "A", "C", "A", "C", "B"],
+      sourceText: "Anything that shapes or sanitises input",
+    },
+    {
+      slug: "associate-foundations-v2",
+      key: "associate-v2-1.8",
+      label: "Ordering",
+      choices: ["C"],
+      sourceText: "Correct sequence: 2, 5, 1, 4, 3",
+    },
+  ]) {
+    await page.goto(`/exams/${item.slug}/practice?question=${item.key}`);
+    await page.getByRole("button", { name: "Start practice", exact: true }).click();
+    await expect(page.locator(".question-type")).toContainText(item.label);
+    expect(await page.content()).not.toContain('"correctKeys"');
+    await expect(page.getByRole("region", { name: "Source answer", exact: true })).toHaveCount(0);
+    const submit = page.getByRole("button", { name: "Submit and reveal", exact: true });
+    await expect(submit).toBeDisabled();
+    if (item.label === "Ordering") {
+      await expect(page.locator(".question-prompt")).toContainText("(5) Gather and attach");
+      await page.getByRole("radio").nth(2).check();
+    } else {
+      const selects = page.locator(".match-select");
+      await expect(selects).toHaveCount(item.choices.length);
+      for (const [index, choice] of item.choices.entries()) {
+        await expect(submit).toBeDisabled();
+        await selects.nth(index).selectOption(choice);
+      }
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    await page.screenshot({ path: `output/playwright/${item.key}.png`, fullPage: true });
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(page.getByRole("region", { name: "Source answer", exact: true })).toContainText(
+      item.sourceText,
+    );
+    await page.getByRole("button", { name: "Hide answer", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Source answer", exact: true })).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator("#question-nav")).toHaveValue(item.key);
+    await expect(page.getByRole("region", { name: "Source answer", exact: true })).toHaveCount(0);
+  }
 });
 
 test("keyboard controls work and hiding discards a late tutor response", async ({ page }) => {
